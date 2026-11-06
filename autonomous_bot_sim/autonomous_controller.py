@@ -43,17 +43,12 @@ from autonomous_bot_sim.color_navigator import ColorCourseNavigator
 SERVO_JOINT = 'servo_joint'
 LOOP_PERIOD = 0.05            # 20 Hz
 SONAR_MAX = 1.20              # URDF sonar max range
-VISION_TIMEOUT = 0.50         # older camera data = no colour seen
+VISION_TIMEOUT = 0.50         # older camera data = finish not seen
 FINISH_PIX = 25               # cyan pixels in the bottom rows
 
 # Camera is tilted down 0.35 rad at 0.185 m height.
-#   obstacle band: rows 68% .. 95% (face of the box we stopped for)
-#   finish band  : rows 88% .. 100% (floor strip right in front)
-# The obstacle band deliberately uses only the lower rows: the next gate is
-# visible above the near box, but it cannot contaminate the colour vote.
-OBS_ROW_LO, OBS_ROW_HI = 0.68, 0.95
+#   finish band: rows 88% .. 100% (floor strip right in front)
 FIN_ROW_LO = 0.88
-OBS_COL_LO, OBS_COL_HI = 0.35, 0.65
 
 # Gazebo sensor/odom publishers use BEST_EFFORT. Subscribers must match.
 SENSOR_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -98,10 +93,8 @@ class AutonomousController(Node):
         self.create_subscription(Range, '/sonar_right', self.right_cb, SENSOR_QOS,
                                  callback_group=self.cb_group)
 
-        # --- camera: obstacle colour + finish colour ---
-        self.red_px = self.green_px = self.finish_px = 0
-        self.obs_x = 0.0            # horizontal colour centroid, -1 .. +1
-        self.obs_px = 0             # pixels behind that centroid
+        # --- camera: cyan finish strip only (box colour is never used) ---
+        self.finish_px = 0
         self.vision_t = -1.0
         self.create_subscription(Image, '/front_camera/image_raw',
                                  self.color_cb, IMAGE_QOS,
@@ -263,43 +256,12 @@ class AutonomousController(Node):
                           math.cos(self.yaw - self.nav.yaw0))
 
     def color_cb(self, msg):
-        """Classify red/green obstacle pixels and cyan finish pixels."""
+        """Detect the cyan finish strip (obstacle colours are ignored)."""
         if msg.encoding not in ('rgb8', 'bgr8'):
             return
         d = msg.data
         swap = msg.encoding == 'bgr8'
         h, w, step = msg.height, msg.width, msg.step
-
-        r0, r1 = int(h * OBS_ROW_LO), int(h * OBS_ROW_HI)
-        c0, c1 = int(w * OBS_COL_LO), int(w * OBS_COL_HI)
-        red = green = 0
-        red_cx = green_cx = 0
-        for j in range(r0, r1, 2):
-            base = j * step
-            for i in range(c0, c1, 2):
-                p = base + 3 * i
-                r, g, b = d[p], d[p + 1], d[p + 2]
-                if swap:
-                    r, b = b, r
-                if r > 60 and r > 1.35 * g and r > 1.35 * b:
-                    red += 1
-                    red_cx += i
-                elif g > 60 and g > 1.35 * r and g > 1.35 * b:
-                    green += 1
-                    green_cx += i
-
-        # Horizontal centroid of the dominant colour: lets the navigator steer
-        # the near box onto the camera axis even when the single TOF ray misses.
-        if red >= green:
-            dominant, cx = red, red_cx
-        else:
-            dominant, cx = green, green_cx
-        if dominant > 0:
-            self.obs_x = (cx / dominant - 0.5 * w) / (0.5 * w)
-            self.obs_px = dominant
-        else:
-            self.obs_x = 0.0
-            self.obs_px = 0
 
         fin_lo = int(h * FIN_ROW_LO)
         cyan = 0
@@ -314,7 +276,7 @@ class AutonomousController(Node):
                         and abs(g - b) < 100:
                     cyan += 1
 
-        self.red_px, self.green_px, self.finish_px = red, green, cyan
+        self.finish_px = cyan
         self.vision_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if self.vision_t <= 0.0:
             self.vision_t = self.get_clock().now().nanoseconds / 1e9
@@ -489,18 +451,13 @@ class AutonomousController(Node):
         self._dead_reckon(t_abs)
 
         fresh = (t_abs - self.vision_t) < VISION_TIMEOUT
-        red = self.red_px if fresh else 0
-        green = self.green_px if fresh else 0
         finish = fresh and self.finish_px >= FINISH_PIX
-        obs_x = self.obs_x if fresh else 0.0
-        obs_px = self.obs_px if fresh else 0
 
         v, w = self.nav.step(x=self.dr_x, y=self.dr_y, rel=self.heading(),
                              t=t_abs,
                              sonar_left=self.sonar_left,
                              sonar_right=self.sonar_right,
-                             red=red, green=green, finish=finish,
-                             obs_x=obs_x, obs_px=obs_px)
+                             finish=finish)
 
         if self.nav.finished:
             self._finish_run(self.nav.finish_reason or 'finish line reached')

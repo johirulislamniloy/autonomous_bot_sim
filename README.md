@@ -13,7 +13,7 @@ Repository: <https://github.com/johirulislamniloy/autonomous_bot_sim>
 | Servo-mounted TOF | `/tof_range` + `/set_joint_trajectory` | forward polar scan |
 | Left ultrasonic sonar | `/sonar_left` | keep the body off side obstacles |
 | Right ultrasonic sonar | `/sonar_right` | keep the body off side obstacles |
-| Angled camera (0.35 rad down) | `/front_camera/image_raw` | red/green obstacle colour + cyan finish line |
+| Angled camera (0.35 rad down) | `/front_camera/image_raw` | cyan finish line only |
 | IMU | `/imu/data` | heading hold, straightening, dead-reckoned progress |
 | Wheel odometry | `/odom` | RViz trail and heading fallback |
 
@@ -109,7 +109,7 @@ A ready-to-edit example is in `config/manual_example.yaml`.
 
 Coordinates are world metres. Keep boxes inside `x in [-0.33, 0.33]`,
 `y in [-1.05, 0.90]` and leave at least 0.30 m edge-to-edge between boxes.
-`red` means the robot passes on the left; `green` on the right.
+The `color` field only sets the box material; navigation ignores it.
 
 ## Navigation
 
@@ -128,16 +128,21 @@ The navigator is a pure-Python state machine in
    onto the polyline and aims `0.20 m` further along it, so overshooting a
    corner cannot turn it back. Speed is reduced while the heading error is
    large and while a side sonar is very close.
-4. **Colour rule (retained)** - if a box really does drift into the swept
-   corridor (for example when no map is available, or after an unplanned
-   deviation), the robot stops just before it and reads the colour with the
-   angled camera:
-   * **RED** -> turn **LEFT**, sidestep until the box is cleared, turn back,
-     cross, straighten with the IMU.
-   * **GREEN** -> turn **RIGHT**, sidestep, turn back, cross, straighten
-     (mirror image).
-   After the detour it re-scans and re-plans.
-5. **FINAL** - straighten and creep forward. The run ends when the cyan strip
+4. **Pass rule (geometry only, no box colour)** - the servo is held dead
+   straight on the way to a box. If a box still reaches the swept corridor
+   (no map, or after an unplanned deviation) the robot stops just before it
+   and picks the side that bends back toward the middle of the arena:
+   * obstacle on the **LEFT** -> turn **RIGHT**, sidestep, then turn **LEFT**
+     to straighten, cross, and re-scan.
+   * obstacle on the **RIGHT** -> turn **LEFT**, sidestep, then turn **RIGHT**
+     to straighten, cross, and re-scan.
+   * obstacle **straight ahead** -> stop before it and run **SCAN** again, so
+     the next scan picks an open side.
+5. **REVERSE** - if the motor is commanded forward but the nearest TOF range
+   has not changed for `1.5 s` (wedged on a box or in a gap that is too
+   narrow), the robot backs up `~4.5 cm`, straightens on the finish heading,
+   and scans again.
+6. **FINAL** - straighten and creep forward. The run ends when the cyan strip
    is detected and the robot has crossed it, or at the raw-TOF end-wall
    guard (a safe stop ~8 cm before the wall). The body never touches the
    boundary wall or a block.
@@ -151,7 +156,8 @@ Key constants (`autonomous_bot_sim/color_navigator.py`):
 | `FINISH_P` | 2.600 m | dead-reckoned axle progress on the cyan line |
 | `PLAN_CLEAR` | 0.125 m | guaranteed free radius used by the planner |
 | `PLAN_DP` | 0.020 m | planner grid resolution |
-| `CHECK_DIST` | 0.060 m | forward TOF distance at which to stop for a colour check |
+| `CHECK_DIST` | 0.060 m | forward TOF distance at which to stop before a box |
+| `TOF_STUCK_T` | 1.5 s | flat TOF while driving forward -> reverse |
 | `CROSS_MIN` | 0.300 m | forward travel that clears a box |
 | `SIDE_STOP` | 0.015 m | sonar distance that stops forward motion |
 
@@ -227,12 +233,12 @@ ros2 launch autonomous_bot_sim sim.launch.py randomize:=false \
 
 ## Colours
 
-* Obstacles: 4 red and 4 green boxes, shuffled on every launch.
+* Obstacles: 4 red and 4 green boxes, shuffled on every launch. These colours
+  are **visual only**; navigation and the pass decision never read them.
 * Start line: yellow.
-* Finish line: **cyan** (`0 0.95 1`). It is deliberately not green so a
-  green obstacle can never be mistaken for the finish line.
+* Finish line: **cyan** (`0 0.95 1`). The camera detects only this strip.
 
-Colour thresholds and image bands are at the top of
+The finish-strip image band and cyan threshold are at the top of
 `autonomous_bot_sim/autonomous_controller.py`.
 
 ## Layout
@@ -243,8 +249,8 @@ Colour thresholds and image bands are at the top of
 * `autonomous_bot_sim/manual_obstacles.py` - manual mode: spawns a YAML
   layout and mirrors hand-placed boxes onto `/obstacle_poses`
 * `config/manual_example.yaml` - example manual layout
-* `autonomous_bot_sim/color_navigator.py` - scan + A* planner + colour-rule
-  state machine
+* `autonomous_bot_sim/color_navigator.py` - scan + A* planner + geometry-only
+  pass/state machine
 * `autonomous_bot_sim/autonomous_controller.py` - ROS wrapper, vision, timer
 * `urdf/robot.urdf.xacro` - angled camera, servo/TOF, left/right sonars
 * `worlds/arena.world` - arena, start line, cyan finish line
