@@ -27,9 +27,10 @@ import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import (QoSProfile, ReliabilityPolicy, HistoryPolicy,
+                       DurabilityPolicy)
 from rclpy.duration import Duration
-from geometry_msgs.msg import Twist, PoseStamped
+from geometry_msgs.msg import Twist, PoseStamped, PoseArray
 from sensor_msgs.msg import Range, Image, Imu, JointState
 from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import Bool
@@ -61,6 +62,9 @@ SENSOR_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
 IMAGE_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                        history=HistoryPolicy.KEEP_LAST, depth=1)
 CMD_QOS = QoSProfile(depth=10)
+# The obstacle layout is published once and must survive a late subscriber.
+LATCH_QOS = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL, depth=1)
 
 
 class AutonomousController(Node):
@@ -106,6 +110,17 @@ class AutonomousController(Node):
         # --- TOF on the servo head ---
         self.have_tof = False
         self.create_subscription(Range, '/tof_range', self.tof_cb, SENSOR_QOS,
+                                 callback_group=self.cb_group)
+
+        # --- box layout published by obstacle_randomizer ---
+        # Stored in world coordinates; converted to the navigator frame once
+        # the exact start pose is known.
+        self.raw_obstacles = []
+        self.start_x = 0.0
+        self.start_y = -1.35
+        self.start_yaw = math.pi / 2.0
+        self.create_subscription(PoseArray, '/obstacle_poses',
+                                 self.obstacle_cb, LATCH_QOS,
                                  callback_group=self.cb_group)
 
         # --- odometry / IMU ---
@@ -208,6 +223,23 @@ class AutonomousController(Node):
             return
         self.nav.tof(a, r, t_msg)
         self.have_tof = True
+
+    def obstacle_cb(self, msg):
+        """Cache the exact box layout for the local path planner."""
+        self.raw_obstacles = [(float(p.position.x), float(p.position.y))
+                              for p in msg.poses]
+        if self.state == 'RUNNING':
+            self._send_obstacles()
+
+    def _send_obstacles(self):
+        """Convert world box centres into the navigator (progress, lateral)
+        frame and hand them to the planner."""
+        pts = []
+        c, s = math.cos(self.start_yaw), math.sin(self.start_yaw)
+        for wx, wy in self.raw_obstacles:
+            dx, dy = wx - self.start_x, wy - self.start_y
+            pts.append((dx * c + dy * s, -dx * s + dy * c))
+        self.nav.set_obstacles(pts)
 
     def odom_cb(self, msg):
         p = msg.pose.pose
@@ -321,7 +353,14 @@ class AutonomousController(Node):
         self.dr_x = self.dr_y = 0.0
         self.dr_t = self.get_clock().now().nanoseconds / 1e9
         self.last_v_cmd = 0.0
+        # The launch/start teleport places the robot at world (0, -1.35) with
+        # yaw +90 deg.  Use that *world* pose for the map transform; /odom is
+        # published in its own (encoder) frame, so its x/y/yaw are not world
+        # coordinates.
+        self.start_x, self.start_y = 0.0, -1.35
+        self.start_yaw = math.pi / 2.0
         self.nav.reset(0.0, 0.0, 0.0)
+        self._send_obstacles()
         self.start_t_abs = self.get_clock().now().nanoseconds / 1e9
         self.state = 'RUNNING'
         self.get_logger().info(

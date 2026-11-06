@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Spawns 10 coloured obstacles (five colour gates, two boxes each) every run."""
+"""Spawns 8 randomly scattered coloured obstacles every run."""
 
 import random
 import time
@@ -7,10 +7,11 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from gazebo_msgs.srv import SpawnEntity
+from geometry_msgs.msg import PoseArray, Pose
 from std_msgs.msg import Bool
 
 from autonomous_bot_sim.arena_layout import (
-    NUM_OBSTACLES, OBS_SIZE, OBS_HEIGHT, pick_positions, pick_colors)
+    NUM_OBSTACLES, OBS_SIZE, OBS_HEIGHT, MIN_GAP, pick_positions, pick_colors)
 
 # bright Gazebo materials: red = pass on the LEFT, green = pass on the RIGHT
 COLOR_RGB = {
@@ -30,6 +31,8 @@ class ObstacleRandomizer(Node):
         self.declare_parameter('seed', -1)     # -1 = different layout every run
         self.client = self.create_client(SpawnEntity, '/spawn_entity')
         self.ready_pub = self.create_publisher(Bool, '/obstacles_ready', LATCH_QOS)
+        self.pose_pub = self.create_publisher(PoseArray, '/obstacle_poses',
+                                              LATCH_QOS)
         while not self.client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for /spawn_entity service in Gazebo...')
 
@@ -59,10 +62,11 @@ class ObstacleRandomizer(Node):
         seed = self.get_parameter('seed').value
         rng = random.Random(None if seed < 0 else seed)
         colors = pick_colors(rng, NUM_OBSTACLES)
-        positions = pick_positions(rng, NUM_OBSTACLES, colors)
+        positions = pick_positions(rng, NUM_OBSTACLES)
         self.get_logger().info(
             f'{NUM_OBSTACLES} obstacles ({colors.count("red")} red, '
-            f'{colors.count("green")} green), two per gate, five gates')
+            f'{colors.count("green")} green), random scatter, '
+            f'min gap {MIN_GAP:.2f} m')
 
         futures = []
         for i, ((x, y), color) in enumerate(zip(positions, colors), start=1):
@@ -89,9 +93,24 @@ class ObstacleRandomizer(Node):
         msg = Bool()
         msg.data = True
         self.ready_pub.publish(msg)
+
+        # Publish the exact box centres so the navigator can plan a safe path.
+        layout = PoseArray()
+        layout.header.frame_id = 'world'
+        layout.header.stamp = self.get_clock().now().to_msg()
+        for x, y in positions:
+            pose = Pose()
+            pose.position.x = float(x)
+            pose.position.y = float(y)
+            pose.position.z = OBS_HEIGHT / 2.0
+            pose.orientation.w = 1.0
+            layout.poses.append(pose)
+        self.pose_pub.publish(layout)
+        self.get_logger().info(
+            f'Published {len(layout.poses)} obstacle poses on /obstacle_poses')
         self.get_logger().info('All obstacles ready -> /obstacles_ready = TRUE (latched).')
-        # keep spinning briefly so the latched message is actually sent out
-        end = time.monotonic() + 0.5
+        # keep spinning briefly so the latched messages are actually sent out
+        end = time.monotonic() + 1.0
         while rclpy.ok() and time.monotonic() < end:
             rclpy.spin_once(self, timeout_sec=0.05)
 

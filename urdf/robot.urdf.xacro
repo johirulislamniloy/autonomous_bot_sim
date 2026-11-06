@@ -37,7 +37,8 @@
   <xacro:property name="sonar_x"   value="0.03"/>
   <xacro:property name="sonar_y"   value="0.075"/>
   <xacro:property name="sonar_z"   value="0.055"/>
-  <xacro:property name="sonar_half_cone" value="0.26"/>  <!-- rad -->
+  <xacro:property name="sonar_half_cone" value="0.42"/>  <!-- rad: overlaps the
+       front TOF sweep, closing the near-side blind arc -->
   <xacro:property name="sonar_max" value="1.20"/>
 
   <!-- ===== 0. FOOTPRINT (ground) ===== -->
