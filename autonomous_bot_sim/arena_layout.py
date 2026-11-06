@@ -8,15 +8,17 @@ OBS_HEIGHT    = 0.20
 BOT_WIDTH     = 0.14
 
 # Edge-to-edge clearance between any two boxes.  The requirement is >= 0.30 m;
-# we use more so the 0.14 m-wide body always has a wide, well-centred corridor.
-MIN_GAP       = 0.44
+# 0.36 leaves a full robot-width corridor while keeping the scatter free.
+MIN_GAP       = 0.36
 
 ARENA_HALF_W  = 0.475          # inner face of the side walls
 ARENA_HALF_L  = 1.475          # inner face of the end walls
-X_RANGE       = (-0.28, 0.28)  # spread the scatter across most of the width
-Y_RANGE       = (-1.00, 0.85)  # keep the start and finish zones clear
+# Full-width scatter, centre included: the whole arena is sampled so boxes can
+# appear in the middle lane instead of only in two fixed side columns.
+X_RANGE       = (-0.33, 0.33)
+Y_RANGE       = (-1.05, 0.90)  # keep the start and finish zones clear
 
-PLAN_RADIUS   = 0.140          # guaranteed free radius around every path point
+PLAN_RADIUS   = 0.125          # guaranteed free radius around every path point
 GRID          = 0.02
 START_X       = 0.0
 START_Y       = -1.35
@@ -67,11 +69,16 @@ def path_exists(obstacles):
 
 
 def pick_positions(rng=random, n=NUM_OBSTACLES):
-    """Scatter n boxes with >= MIN_GAP edge-to-edge clearance.
+    """Scatter n boxes uniformly across the whole arena.
 
-    Every launch uses a fresh RNG (seed = -1 in the launch file), so the
-    arrangement is different each run.  A BFS check guarantees that at least
-    one robot-width corridor still connects the start to the finish.
+    Every box centre is drawn independently from ``X_RANGE`` x ``Y_RANGE`` and
+    kept only if its true edge-to-edge distance to every accepted box is at
+    least ``MIN_GAP``.  Because the sampling is uniform over the full width,
+    layouts are genuinely different each run and boxes land in the middle lane
+    as often as near the walls (unlike a fixed 2-column grid).
+
+    A BFS check then guarantees that at least one robot-width corridor still
+    connects the start to the finish.
     """
     for _ in range(3000):
         pts = []
@@ -89,11 +96,13 @@ def pick_positions(rng=random, n=NUM_OBSTACLES):
         if ok and path_exists(pts):
             return pts
 
-    # Very unlikely fallback: 2 x 4 grid, still with the required gaps.
+    # Very unlikely fallback: staggered three-column pattern with valid gaps.
     pts = []
-    for col, x in enumerate((-0.20, 0.20)):
-        for row in range(4):
-            pts.append((x, -0.90 + row * 0.58))
+    for x, rows in ((-0.28, (-0.95, -0.05, 0.85)),
+                    (0.00, (-0.50, 0.45)),
+                    (0.28, (-0.95, -0.05, 0.85))):
+        for y in rows:
+            pts.append((x, y))
     if path_exists(pts):
         return pts
     raise RuntimeError('Could not find a valid scattered layout')

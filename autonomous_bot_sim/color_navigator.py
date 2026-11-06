@@ -26,7 +26,7 @@ Only simple sensor values are consumed, so the class is unit-testable.
 import heapq
 import math
 
-from autonomous_bot_sim.arena_layout import OBS_SIZE, PLAN_RADIUS
+from autonomous_bot_sim.arena_layout import OBS_SIZE, PLAN_RADIUS, ARENA_HALF_W
 
 INF = 9.9
 
@@ -108,11 +108,11 @@ class ColorCourseNavigator:
     PLAN_DP       = 0.02
     PLAN_P_MIN    = -0.05
     PLAN_P_MAX    = 2.72
-    PLAN_L_MAX    = 0.330       # stay clear of the side walls
+    PLAN_L_MAX    = ARENA_HALF_W - PLAN_RADIUS  # stay clear of the side walls
     PLAN_CLEAR    = PLAN_RADIUS  # guaranteed corridor radius (matches layout)
     PLAN_GOAL_P   = 2.45
     WP_TOL        = 0.070
-    LOOKAHEAD     = 0.300
+    LOOKAHEAD     = 0.200       # smaller = tracks curves tighter, less corner cutting
 
     # ---------------------------------------------------------- recovery
     V_AVOID       = 0.060       # (unused) kept for tuning reference

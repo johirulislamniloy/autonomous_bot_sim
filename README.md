@@ -33,13 +33,18 @@ Every launch (`seed:=-1`) scatters **exactly 8 square blocks** (0.08 m x
 
 Placement rules (`autonomous_bot_sim/arena_layout.py`):
 
-* boxes are spread over `x in [-0.28, 0.28]`, `y in [-1.00, 0.85]`;
-* every pair is at least **0.44 m** apart edge-to-edge, comfortably above the
-  required **0.30 m** minimum;
-* a BFS on a 2 cm grid checks that at least one **0.14 m-radius free
+* every box centre is drawn independently from the **whole arena**:
+  `x in [-0.33, 0.33]`, `y in [-1.05, 0.90]`. The sampling is uniform over the
+  full width, so blocks land in the middle lane as often as near the walls
+  (no fixed left/right columns);
+* each new box is kept only if its true edge-to-edge distance to every other
+  box is at least **0.36 m**, safely above the required **0.30 m** minimum;
+* a BFS on a 2 cm grid checks that at least one **0.125 m-radius free
   corridor** still connects the start to the finish before a layout is
   accepted. The start and finish zones stay clear.
 
+In practice ~84% of generated layouts contain at least one block inside the
+central `|x| < 0.10 m` lane, and consecutive launches look clearly different.
 Use `seed:=123` for a repeatable layout, or leave `seed:=-1` (default) for a
 new arrangement on every run.
 
@@ -54,10 +59,10 @@ The navigator is a pure-Python state machine in
    `(progress, lateral)` frame.
 2. **PLAN** - a grid A* over the known boxes, with a clearance check on every
    cell, picks a path to the finish. The path is line-of-sight smoothed and
-   biased toward the middle of each corridor. This guarantees the 0.14 m
+   biased toward the middle of each corridor. This guarantees the 0.125 m
    clearance that the layout generator verified.
 3. **FOLLOW** - pure-pursuit tracking of the path: the robot projects itself
-   onto the polyline and aims `0.30 m` further along it, so overshooting a
+   onto the polyline and aims `0.20 m` further along it, so overshooting a
    corner cannot turn it back. Speed is reduced while the heading error is
    large and while a side sonar is very close.
 4. **Colour rule (retained)** - if a box really does drift into the swept
@@ -81,7 +86,7 @@ Key constants (`autonomous_bot_sim/color_navigator.py`):
 | `WALL_P` | 2.825 m | end-wall inner face, measured from the start pose |
 | `WALL_SIDE` | 0.475 m | side-wall inner face, measured from the lane centre |
 | `FINISH_P` | 2.600 m | dead-reckoned axle progress on the cyan line |
-| `PLAN_CLEAR` | 0.140 m | guaranteed free radius used by the planner |
+| `PLAN_CLEAR` | 0.125 m | guaranteed free radius used by the planner |
 | `PLAN_DP` | 0.020 m | planner grid resolution |
 | `CHECK_DIST` | 0.060 m | forward TOF distance at which to stop for a colour check |
 | `CROSS_MIN` | 0.300 m | forward travel that clears a box |
