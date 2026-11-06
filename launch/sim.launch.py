@@ -3,7 +3,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (IncludeLaunchDescription, DeclareLaunchArgument,
                             ExecuteProcess)
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -27,12 +27,22 @@ def generate_launch_description():
     auto_start_arg = DeclareLaunchArgument(
         'auto_start', default_value='false',
         description='publish /start_button automatically once the sim is up')
+    randomize_arg = DeclareLaunchArgument(
+        'randomize', default_value='true',
+        description='spawn 8 random obstacles (false = place them yourself)')
+    start_paused_arg = DeclareLaunchArgument(
+        'start_paused', default_value='false',
+        description='start Gazebo paused so you can place obstacles first')
+    manual_layout_arg = DeclareLaunchArgument(
+        'manual_layout', default_value='',
+        description='YAML layout to spawn when randomize:=false')
 
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('gazebo_ros'), 'launch', 'gazebo.launch.py')),
         launch_arguments={'world': world_file,
-                          'gui': LaunchConfiguration('gui')}.items()
+                          'gui': LaunchConfiguration('gui'),
+                          'pause': LaunchConfiguration('start_paused')}.items()
     )
 
     robot_state_publisher_node = Node(
@@ -94,7 +104,18 @@ def generate_launch_description():
         package=pkg_name,
         executable='obstacle_randomizer',
         output='screen',
-        parameters=[{'seed': LaunchConfiguration('seed')}]
+        parameters=[{'seed': LaunchConfiguration('seed')}],
+        condition=IfCondition(LaunchConfiguration('randomize'))
+    )
+
+    # Manual mode: mirror the boxes currently in Gazebo onto /obstacle_poses
+    # (and optionally spawn a chosen YAML layout) so the planner uses them.
+    manual_obstacles_node = Node(
+        package=pkg_name,
+        executable='manual_obstacles',
+        output='screen',
+        parameters=[{'layout_file': LaunchConfiguration('manual_layout')}],
+        condition=UnlessCondition(LaunchConfiguration('randomize'))
     )
 
     controller_node = Node(
@@ -117,12 +138,14 @@ def generate_launch_description():
     #   ros2 run autonomous_bot_sim start_button
     return LaunchDescription([
         rviz_arg, gui_arg, seed_arg, auto_start_arg,
+        randomize_arg, start_paused_arg, manual_layout_arg,
         gazebo,
         robot_state_publisher_node,
         spawn_entity,
         align_start,
         auto_start,
         obstacle_randomizer_node,
+        manual_obstacles_node,
         controller_node,
         rviz_node,
     ])

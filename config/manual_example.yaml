@@ -1,0 +1,17 @@
+# Example manual layout for:
+#   ros2 run autonomous_bot_sim manual_obstacles \
+#       --ros-args -p layout_file:=$HOME/ros2_ws/src/autonomous_bot_sim/config/manual_example.yaml
+#
+# Coordinates are world metres.  Keep boxes inside x in [-0.33, 0.33] and
+# y in [-1.05, 0.90], and leave >= 0.30 m edge-to-edge between boxes.
+# color: red   -> robot passes on the LEFT
+#        green -> robot passes on the RIGHT
+obstacles:
+  - {x: -0.21, y: -1.01, color: red}
+  - {x: -0.17, y:  0.42, color: green}
+  - {x: -0.12, y: -0.55, color: red}
+  - {x: -0.01, y: -0.04, color: green}
+  - {x:  0.09, y:  0.87, color: red}
+  - {x:  0.19, y: -0.91, color: green}
+  - {x:  0.32, y: -0.49, color: red}
+  - {x:  0.32, y:  0.35, color: green}

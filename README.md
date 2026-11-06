@@ -48,6 +48,69 @@ central `|x| < 0.10 m` lane, and consecutive launches look clearly different.
 Use `seed:=123` for a repeatable layout, or leave `seed:=-1` (default) for a
 new arrangement on every run.
 
+## Pause and place obstacles yourself
+
+Start in manual mode, paused, with the robot held until you are ready:
+
+```bash
+./run_sim.sh randomize:=false start_paused:=true auto_start:=false
+```
+
+Then, in the Gazebo window:
+
+1. Use **Insert -> Box** and drag/rotate the box with the translate/rotate
+   tools, or spawn boxes from the terminal (see the YAML method below).
+2. Boxes whose names start with `obstacle`, `unit_box` or `box` are picked up
+   automatically and published on `/obstacle_poses`, so the planner uses
+   exactly the layout you placed. Walls, ground and the robot are ignored.
+3. Resume the physics, then start the run with
+   `ros2 run autonomous_bot_sim start_button` (press ENTER).
+
+Pause and resume at any time from another terminal:
+
+```bash
+ros2 service call /pause_physics   std_srvs/srv/Empty
+ros2 service call /unpause_physics std_srvs/srv/Empty
+```
+
+> Gazebo only refreshes `/model_states` while physics is running, so the new
+> boxes are published to the planner after you resume. That is why the robot
+> should still be stopped (`auto_start:=false`) while you place them.
+
+### Reproducible layout from a YAML file
+
+Instead of dragging boxes, describe them in a file:
+
+```yaml
+obstacles:
+  - {x: -0.21, y: -1.01, color: red}
+  - {x: -0.17, y:  0.42, color: green}
+  - {x:  0.00, y:  0.10, color: red}
+```
+
+Then either launch directly with it:
+
+```bash
+./run_sim.sh randomize:=false \
+  manual_layout:=$PWD/config/manual_example.yaml
+```
+
+or start manual mode and load it later:
+
+```bash
+ros2 run autonomous_bot_sim manual_obstacles \
+  --ros-args -p layout_file:=$PWD/config/manual_example.yaml
+```
+
+`manual_obstacles` pauses physics, removes old `obstacle_*` boxes, spawns the
+file, publishes `/obstacle_poses`, and resumes. Add
+`-p resume_after_spawn:=false` to leave the world paused for inspection.
+A ready-to-edit example is in `config/manual_example.yaml`.
+
+Coordinates are world metres. Keep boxes inside `x in [-0.33, 0.33]`,
+`y in [-1.05, 0.90]` and leave at least 0.30 m edge-to-edge between boxes.
+`red` means the robot passes on the left; `green` on the right.
+
 ## Navigation
 
 The navigator is a pure-Python state machine in
@@ -157,6 +220,9 @@ Useful launch options:
 ros2 launch autonomous_bot_sim sim.launch.py seed:=123      # repeatable layout
 ros2 launch autonomous_bot_sim sim.launch.py rviz:=false    # no RViz
 ros2 launch autonomous_bot_sim sim.launch.py gui:=false     # no Gazebo GUI
+ros2 launch autonomous_bot_sim sim.launch.py randomize:=false start_paused:=true
+ros2 launch autonomous_bot_sim sim.launch.py randomize:=false \
+    manual_layout:=$PWD/config/manual_example.yaml
 ```
 
 ## Colours
@@ -174,6 +240,9 @@ Colour thresholds and image bands are at the top of
 * `autonomous_bot_sim/arena_layout.py` - 8-box scatter, gap/BFS validation
 * `autonomous_bot_sim/obstacle_randomizer.py` - spawns the blocks and
   publishes `/obstacle_poses`
+* `autonomous_bot_sim/manual_obstacles.py` - manual mode: spawns a YAML
+  layout and mirrors hand-placed boxes onto `/obstacle_poses`
+* `config/manual_example.yaml` - example manual layout
 * `autonomous_bot_sim/color_navigator.py` - scan + A* planner + colour-rule
   state machine
 * `autonomous_bot_sim/autonomous_controller.py` - ROS wrapper, vision, timer

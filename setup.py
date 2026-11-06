@@ -15,6 +15,7 @@ setup(
         (os.path.join('share', package_name, 'worlds'), glob('worlds/*.world')),
         (os.path.join('share', package_name, 'urdf'), glob('urdf/*.xacro')),
         (os.path.join('share', package_name, 'rviz'), glob('rviz/*.rviz')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -27,6 +28,7 @@ setup(
             'obstacle_randomizer = autonomous_bot_sim.obstacle_randomizer:main',
             'autonomous_controller = autonomous_bot_sim.autonomous_controller:main',
             'start_button = autonomous_bot_sim.start_button:main',
+            'manual_obstacles = autonomous_bot_sim.manual_obstacles:main',
         ],
     },
 )
