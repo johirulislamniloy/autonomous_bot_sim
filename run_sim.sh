@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Build and launch the simulation, then press START automatically.
+#
+#   ./run_sim.sh                 # GUI + RViz + auto start (seed random)
+#   ./run_sim.sh gui:=false rviz:=false seed:=123
+#   ./run_sim.sh auto_start:=false   # start manually with the start_button
+#
+# Any extra arguments are passed straight to `ros2 launch`.
+set -eo pipefail
+
+WS="${ROS2_WS:-$HOME/ros2_ws}"
+PKG="autonomous_bot_sim"
+
+cd "$WS"
+
+# Load ROS if this shell has not sourced it already.
+if [ -z "${ROS_DISTRO:-}" ]; then
+    # shellcheck disable=SC1090
+    source /opt/ros/*/setup.bash
+fi
+
+colcon build --packages-select "$PKG" --symlink-install
+# shellcheck disable=SC1091
+source install/setup.bash
+
+# Auto-start unless the caller explicitly overrides it.
+ARGS=("$@")
+if [[ " $* " != *" auto_start:="* ]]; then
+    ARGS+=("auto_start:=true")
+fi
+
+exec ros2 launch "$PKG" sim.launch.py "${ARGS[@]}"

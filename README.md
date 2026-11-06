@@ -88,6 +88,32 @@ When the run completes the controller prints the total time in the terminal:
 ==============================================================
 ```
 
+## Quick start (one command)
+
+```bash
+~/ros2_ws/src/autonomous_bot_sim/run_sim.sh
+```
+
+This builds the package, sources the workspace, launches Gazebo/RViz and
+publishes `/start_button` automatically after the simulation is ready.
+Extra launch arguments are passed through, e.g.:
+
+```bash
+~/ros2_ws/src/autonomous_bot_sim/run_sim.sh gui:=false rviz:=false seed:=123
+```
+
+A `botsim` alias is also available in new interactive shells:
+
+```bash
+botsim
+```
+
+To keep pressing START manually, add `auto_start:=false`:
+
+```bash
+~/ros2_ws/src/autonomous_bot_sim/run_sim.sh auto_start:=false
+```
+
 ## Run
 
 ```bash

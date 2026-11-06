@@ -24,6 +24,9 @@ def generate_launch_description():
                                     description='start the Gazebo client GUI')
     seed_arg = DeclareLaunchArgument('seed', default_value='-1',
                                      description='obstacle seed (-1 = random)')
+    auto_start_arg = DeclareLaunchArgument(
+        'auto_start', default_value='false',
+        description='publish /start_button automatically once the sim is up')
 
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
@@ -74,6 +77,19 @@ def generate_launch_description():
         output='screen'
     )
 
+    # Published automatically when auto_start:=true.  The controller re-aligns
+    # the robot on START, so a fixed delay after the launch is safe.
+    auto_start = ExecuteProcess(
+        cmd=['bash', '-c',
+             'until ros2 topic list 2>/dev/null | grep -q /start_button; do '
+             'sleep 0.5; done; '
+             'sleep 8; '
+             'ros2 topic pub --once /start_button std_msgs/msg/Bool '
+             '"{data: true}"'],
+        condition=IfCondition(LaunchConfiguration('auto_start')),
+        output='screen'
+    )
+
     obstacle_randomizer_node = Node(
         package=pkg_name,
         executable='obstacle_randomizer',
@@ -100,11 +116,12 @@ def generate_launch_description():
     # start_button ALADA terminal e chalate hobe (ENTER lage):
     #   ros2 run autonomous_bot_sim start_button
     return LaunchDescription([
-        rviz_arg, gui_arg, seed_arg,
+        rviz_arg, gui_arg, seed_arg, auto_start_arg,
         gazebo,
         robot_state_publisher_node,
         spawn_entity,
         align_start,
+        auto_start,
         obstacle_randomizer_node,
         controller_node,
         rviz_node,
