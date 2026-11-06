@@ -178,6 +178,16 @@ When the run completes the controller prints the total challenge time:
 ==============================================================
 ```
 
+When you press **Ctrl+C** to exit after the run, the controller prints the
+total time between START and the stop instant (the finish time if reached,
+otherwise the moment you interrupted):
+
+```
+==============================================================
+  TOTAL RUN TIME (start -> finish): 29.90 seconds
+==============================================================
+```
+
 ## Quick start (one command)
 
 ```bash

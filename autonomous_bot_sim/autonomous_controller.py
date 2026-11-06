@@ -146,6 +146,7 @@ class AutonomousController(Node):
         self.align_done_t = None
         self.align_request_t = None
         self.start_t_abs = None
+        self.finish_t_abs = None
         self.path = Path()
         self.path.header.frame_id = 'odom'
         self.last_path_t = 0.0
@@ -349,6 +350,15 @@ class AutonomousController(Node):
             return 0.0
         return (self.get_clock().now().nanoseconds / 1e9) - self.start_t_abs
 
+    def total_time(self):
+        """Seconds from START to the stop instant (finish, or Ctrl+C)."""
+        if self.start_t_abs is None:
+            return 0.0
+        stop = self.finish_t_abs
+        if stop is None:
+            stop = self.get_clock().now().nanoseconds / 1e9
+        return max(0.0, stop - self.start_t_abs)
+
     def publish_trail(self):
         if self.elapsed() - self.last_path_t < 0.1:
             return
@@ -380,6 +390,8 @@ class AutonomousController(Node):
 
     def _finish_run(self, reason):
         self.state = 'FINISHED'
+        if self.finish_t_abs is None:
+            self.finish_t_abs = self.get_clock().now().nanoseconds / 1e9
         self.pub.publish(Twist())
         print('\n' + '=' * 62, flush=True)
         print('  CHALLENGE COMPLETE in %.2f seconds' % self.elapsed(), flush=True)
@@ -506,11 +518,37 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.pub.publish(Twist())
-        executor.shutdown()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        # Ctrl+C can invalidate the rclpy context before this block runs, so
+        # stop the motors defensively and always print the run summary.
+        try:
+            total = node.total_time()
+        except (Exception, KeyboardInterrupt):  # context may be shut down
+            total = None
+        finished = node.state == 'FINISHED'
+        try:
+            node.pub.publish(Twist())
+        except (Exception, KeyboardInterrupt):  # context may be shut down
+            pass
+        if node.start_t_abs is not None:
+            label = ('TOTAL RUN TIME (start -> finish)' if finished
+                     else 'TOTAL RUN TIME (start -> exit)')
+            value = total if total is not None else 0.0
+            print('\n' + '=' * 62, flush=True)
+            print('  %s: %.2f seconds' % (label, value), flush=True)
+            print('=' * 62 + '\n', flush=True)
+        try:
+            executor.shutdown()
+        except (Exception, KeyboardInterrupt):  # context may be shut down
+            pass
+        try:
+            node.destroy_node()
+        except (Exception, KeyboardInterrupt):  # a late Ctrl+C is harmless
+            pass
+        try:
+            if rclpy.ok():
+                rclpy.shutdown()
+        except (Exception, KeyboardInterrupt):
+            pass
 
 
 if __name__ == '__main__':
