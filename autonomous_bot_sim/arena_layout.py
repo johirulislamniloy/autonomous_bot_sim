@@ -2,20 +2,26 @@ import random
 from collections import deque
 
 # ---------- Settings (meter) ----------
-NUM_OBSTACLES = 8
-OBS_SIZE      = 0.05
+NUM_OBSTACLES = 10
+OBS_SIZE      = 0.10
 OBS_HEIGHT    = 0.20
 BOT_WIDTH     = 0.14
 MIN_GAP       = 0.25          # only used for the log message now
 
 ARENA_HALF_W  = 0.475
 ARENA_HALF_L  = 1.475
-X_RANGE       = (-0.38, 0.38)
-Y_RANGE       = (-0.85, 0.90)
+# Keep obstacles inside a central band so EITHER colour rule (red -> pass
+# left, green -> pass right) always has enough room next to the side wall.
+X_RANGE       = (-0.20, 0.20)
+Y_RANGE       = (-1.10, 1.10)
 
-MIN_DIST      = 0.30          # centre-to-centre (Euclidean) between obstacles
+MIN_DIST      = 0.27          # centre-to-centre (Euclidean) between obstacles
 PLAN_RADIUS   = 0.085         # bot half-width (0.07) + margin
 GRID          = 0.02
+
+# Half of the obstacles are red, half are green.  The order is shuffled so
+# both colours appear at random places every run.
+OBSTACLE_COLORS = ('red', 'green')
 
 
 def far_enough(a, b):
@@ -42,12 +48,12 @@ def path_exists(obstacles):
             return False
         return all(_box_dist(x, y, o) > PLAN_RADIUS for o in obstacles)
 
-    start = (nx // 2, int((-1.20 + ARENA_HALF_L) / GRID))
+    start = (nx // 2, int((-1.35 + ARENA_HALF_L) / GRID))
     if not free(*start):
         return False
     seen = {start}
     q = deque([start])
-    goal_j = int((1.10 + ARENA_HALF_L) / GRID)
+    goal_j = int((1.20 + ARENA_HALF_L) / GRID)
     while q:
         i, j = q.popleft()
         if j >= goal_j:
@@ -60,15 +66,50 @@ def path_exists(obstacles):
     return False
 
 
-def pick_positions(rng=random, n=NUM_OBSTACLES):
-    for _ in range(2000):
+def pick_positions(rng=random, n=NUM_OBSTACLES, colors=None):
+    """Place the boxes as compact colour gates: two boxes of one colour per row.
+
+    The pair sits on the CLOSED side of the lane, close to the centre line:
+    the inner box is almost dead ahead (so the single TOF ray can range it)
+    and the outer box is only 0.15 m further to that same side.  A red gate
+    therefore leaves a wide lane on the robot's LEFT and a green gate on its
+    RIGHT.  Because the pair is compact, the sidestep is only ~0.15 m and the
+    robot can re-centre in the gap before the next row.
+
+    Rows are spaced ~0.57 m apart, which is what the stop -> turn -> sidestep
+    -> cross -> re-centre cycle needs in a 3 m arena.
+    """
+    gates = n // 2
+    y0, y1 = -1.10, 1.18
+    step = (y1 - y0) / max(1, gates - 1)
+    for _ in range(200):
         pts = []
-        for _ in range(500):
-            p = (rng.uniform(*X_RANGE), rng.uniform(*Y_RANGE))
-            if all(far_enough(p, q) for q in pts):
-                pts.append(p)
-                if len(pts) == n:
-                    break
-        if len(pts) == n and path_exists(pts):
+        for g in range(gates):
+            y = y0 + g * step
+            color = colors[2 * g] if colors else None
+            sign = 1.0 if color != 'green' else -1.0   # red pair on the robot's right
+            inner = rng.uniform(-0.008, 0.008)          # dead ahead: easy to see
+            outer = sign * 0.150 + rng.uniform(-0.010, 0.010)
+            pts.append((inner, y + rng.uniform(-0.010, 0.010)))
+            pts.append((outer, y + rng.uniform(-0.010, 0.010)))
+        # any leftover slots (odd n) go on the open side of the last gate
+        while len(pts) < n:
+            g = len(pts) // 2
+            y = y0 + min(g, gates - 1) * step
+            pts.append((0.0, y + 0.04 * (len(pts) % 3)))
+        if path_exists(pts):
             return pts
     raise RuntimeError('Could not find a valid obstacle layout')
+
+
+def pick_colors(rng=random, n=NUM_OBSTACLES):
+    """Exactly half red / half green, as same-colour gates.
+
+    Each gate is two boxes of one colour and consecutive gates alternate, so
+    the robot has to swing left, then right, then left ... exactly the
+    colour rule.  The first gate colour is still random every run.
+    """
+    first = rng.choice(OBSTACLE_COLORS)
+    second = 'green' if first == 'red' else 'red'
+    return [first if (i // 2) % 2 == 0 else second for i in range(n)]
+

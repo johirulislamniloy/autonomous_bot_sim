@@ -23,11 +23,22 @@
   <xacro:property name="servo_z"    value="0.09"/>   <!-- joint (beam pivot) z, beam height = 0.125 m abs -->
   <xacro:property name="servo_max"  value="1.4"/>    <!-- joint limit, rad (we sweep +-1.05) -->
 
-  <!-- ===== CAMERA (raised mast, tilted down: sees obstacles AND the floor
-       green finish line). Tilt must match GREEN_CAM_TILT in the controller. -->
-  <xacro:property name="cam_tilt" value="0.32"/>     <!-- rad down from horizontal -->
+  <!-- ===== CAMERA (raised mast, angled down: sees obstacle colours in the
+       middle of the image AND the floor finish line in the bottom rows).
+       Tilt must match CAM_TILT in the controller. -->
+  <xacro:property name="cam_tilt" value="0.35"/>     <!-- rad down from horizontal -->
   <xacro:property name="cam_x"    value="0.075"/>
   <xacro:property name="cam_z"    value="0.15"/>     <!-- lens at 0.185 m above ground -->
+
+  <!-- ===== 2 x ULTRASONIC SIDE SONARS =====
+       One on each side of the body, beam pointing outwards with a 30 deg
+       cone.  They keep the chassis from touching obstacles while the bot
+       drives past them and while it sidesteps around a coloured obstacle. -->
+  <xacro:property name="sonar_x"   value="0.03"/>
+  <xacro:property name="sonar_y"   value="0.075"/>
+  <xacro:property name="sonar_z"   value="0.055"/>
+  <xacro:property name="sonar_half_cone" value="0.26"/>  <!-- rad -->
+  <xacro:property name="sonar_max" value="1.20"/>
 
   <!-- ===== 0. FOOTPRINT (ground) ===== -->
   <link name="base_footprint"/>
@@ -152,7 +163,7 @@
     <sensor type="ray" name="tof_sensor">
       <pose>0 0 0 0 0 0</pose>
       <visualize>true</visualize>
-      <update_rate>20</update_rate>
+      <update_rate>25</update_rate>
       <ray>
         <scan>
           <horizontal>
@@ -226,7 +237,7 @@
       <pose>0 0 0 0 ${cam_tilt} 0</pose>
       <always_on>true</always_on>
       <visualize>false</visualize>
-      <update_rate>15</update_rate>
+      <update_rate>10</update_rate>
       <camera>
         <horizontal_fov>1.2</horizontal_fov>
         <image><width>320</width><height>240</height><format>R8G8B8</format></image>
@@ -265,6 +276,70 @@
       </plugin>
     </sensor>
   </gazebo>
+
+  <!-- ===== 6b. LEFT / RIGHT ULTRASONIC SONARS (simulated with ray sensors)
+       Range messages: /sonar_left and /sonar_right.
+       The reported range is the minimum of the 5 rays in the cone, which is
+       exactly what an ultrasonic sensor does for a nearby flat object. -->
+  <xacro:macro name="side_sonar" params="side y yaw">
+    <link name="sonar_${side}_link">
+      <visual>
+        <geometry><box size="0.018 0.012 0.018"/></geometry>
+        <material name="sonar_dark"><color rgba="0.15 0.15 0.15 1.0"/></material>
+      </visual>
+      <inertial>
+        <mass value="0.003"/>
+        <inertia ixx="0.0000002" ixy="0.0" ixz="0.0"
+                 iyy="0.0000002" iyz="0.0" izz="0.0000002"/>
+      </inertial>
+    </link>
+    <joint name="sonar_${side}_joint" type="fixed">
+      <parent link="base_link"/>
+      <child link="sonar_${side}_link"/>
+      <origin xyz="${sonar_x} ${y} ${sonar_z}" rpy="0 0 ${yaw}"/>
+    </joint>
+
+    <gazebo reference="sonar_${side}_link">
+      <material>Gazebo/DarkGrey</material>
+      <sensor type="ray" name="sonar_${side}_sensor">
+        <pose>0 0 0 0 0 0</pose>
+        <visualize>true</visualize>
+        <update_rate>15</update_rate>
+        <ray>
+          <scan>
+            <horizontal>
+              <samples>5</samples>
+              <resolution>1</resolution>
+              <min_angle>-${sonar_half_cone}</min_angle>
+              <max_angle>${sonar_half_cone}</max_angle>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.02</min>
+            <max>${sonar_max}</max>
+            <resolution>0.01</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.008</stddev>
+          </noise>
+        </ray>
+        <plugin name="sonar_${side}_plugin" filename="libgazebo_ros_ray_sensor.so">
+          <ros>
+            <namespace>/</namespace>
+            <remapping>~/out:=sonar_${side}</remapping>
+          </ros>
+          <output_type>sensor_msgs/Range</output_type>
+          <radiation_type>ultrasound</radiation_type>
+          <frame_name>sonar_${side}_link</frame_name>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+
+  <xacro:side_sonar side="left"  y="${sonar_y}"  yaw="${PI2}"/>
+  <xacro:side_sonar side="right" y="${-sonar_y}" yaw="${-PI2}"/>
 
 
   <!-- ===== 7. GAZEBO DIFF DRIVE (encoder odometry) ===== -->

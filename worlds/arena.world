@@ -6,6 +6,16 @@
     <include><uri>model://sun</uri></include>
     <include><uri>model://ground_plane</uri></include>
 
+    <!-- ROS 2 state interface: lets the launch file place the robot exactly
+         on the start line and read its world pose (gz model is unreliable
+         here).  Exposes /gazebo/set_entity_state and /gazebo/get_entity_state. -->
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+      <ros>
+        <namespace>/</namespace>
+      </ros>
+      <update_rate>30.0</update_rate>
+    </plugin>
+
     <physics name="default_physics" type="ode">
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>
@@ -68,10 +78,13 @@
       </link>
     </model>
 
-    <!-- ===== 3. START LINE (yellow) & FINISH LINE (green) - visual only ===== -->
+    <!-- ===== 3. START LINE (yellow) & FINISH LINE (cyan) - visual only =====
+         The finish line uses CYAN (not green) so the green obstacles can
+         never be mistaken for it.  The controller looks for cyan only in the
+         bottom rows of the angled camera. ===== -->
     <model name="start_line">
       <static>true</static>
-      <pose>0.0 -1.25 0.001 0 0 0</pose>
+      <pose>0.0 -1.35 0.001 0 0 0</pose>
       <link name="link">
         <visual name="visual">
           <geometry><box><size>0.95 0.04 0.002</size></box></geometry>
@@ -82,11 +95,11 @@
 
     <model name="finish_line">
       <static>true</static>
-      <pose>0.0 1.25 0.001 0 0 0</pose>
+      <pose>0.0 1.30 0.001 0 0 0</pose>
       <link name="link">
         <visual name="visual">
           <geometry><box><size>0.95 0.04 0.002</size></box></geometry>
-          <material><ambient>0 1 0 1</ambient><diffuse>0 1 0 1</diffuse></material>
+          <material><ambient>0 0.95 1 1</ambient><diffuse>0 0.95 1 1</diffuse></material>
         </visual>
       </link>
     </model>
