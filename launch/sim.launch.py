@@ -7,6 +7,7 @@ from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 import xacro
 
 
@@ -36,7 +37,9 @@ def generate_launch_description():
     manual_layout_arg = DeclareLaunchArgument(
         'manual_layout', default_value='',
         description='YAML layout to spawn when randomize:=false')
-
+    mode_arg = DeclareLaunchArgument(
+        'mode', default_value='astar',
+        description='Navigation mode: astar | scan | bug2')
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
             get_package_share_directory('gazebo_ros'), 'launch', 'gazebo.launch.py')),
@@ -122,7 +125,9 @@ def generate_launch_description():
         package=pkg_name,
         executable='autonomous_controller',
         output='screen',
-        parameters=[{'use_sim_time': True}]
+        parameters=[{'use_sim_time': True,
+                     'mode': ParameterValue(
+                         LaunchConfiguration('mode'), value_type=str)}]
     )
 
     rviz_node = Node(
@@ -138,7 +143,7 @@ def generate_launch_description():
     #   ros2 run autonomous_bot_sim start_button
     return LaunchDescription([
         rviz_arg, gui_arg, seed_arg, auto_start_arg,
-        randomize_arg, start_paused_arg, manual_layout_arg,
+        randomize_arg, start_paused_arg, manual_layout_arg, mode_arg,
         gazebo,
         robot_state_publisher_node,
         spawn_entity,

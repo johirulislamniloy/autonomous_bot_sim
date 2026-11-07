@@ -21,6 +21,7 @@ messages to its simple sensor inputs and reports the total challenge time.
 """
 import math
 import time
+from rcl_interfaces.msg import SetParametersResult
 from collections import deque
 
 import rclpy
@@ -66,7 +67,10 @@ class AutonomousController(Node):
     def __init__(self):
         super().__init__('autonomous_controller')
         self.nav = ColorCourseNavigator()
-
+        self.declare_parameter('mode', 'astar')
+        self.nav.set_mode(str(self.get_parameter('mode').value))
+        self.add_on_set_parameters_callback(self._on_params)
+        
         # A re-entrant group keeps one entity from locking every other callback.
         # Without it, a malformed Gazebo sample leaves rclpy's default
         # mutually-exclusive group permanently "executing" (the exception is
@@ -158,6 +162,11 @@ class AutonomousController(Node):
             'Waiting for START...')
 
     # ------------------------------------------------------------- callbacks
+    def _on_params(self, params):
+        for p in params:
+            if p.name == 'mode':
+                self.nav.set_mode(str(p.value))
+        return SetParametersResult(successful=True)
     def left_cb(self, msg):
         self.sonar_left = self._clean_range(msg)
 
