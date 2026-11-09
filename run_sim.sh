@@ -7,6 +7,9 @@
 #   ./run_sim.sh randomize:=false start_paused:=true auto_start:=false
 #                                # paused, place obstacles yourself
 #   ./run_sim.sh randomize:=false manual_layout:=$PWD/config/manual_example.yaml
+#   ./run_sim.sh mode:=astar     # map-aware A* (default)
+#   ./run_sim.sh mode:=scan      # reactive scan-and-go, no map needed
+#   ./run_sim.sh mode:=bug2      # reactive Bug2 obstacle following
 #
 # Any extra arguments are passed straight to `ros2 launch`.
 set -eo pipefail

@@ -113,8 +113,19 @@ The `color` field only sets the box material; navigation ignores it.
 
 ## Navigation
 
+Pick the algorithm with `mode:=astar|scan|bug2` (default `astar`):
+
+```bash
+./run_sim.sh mode:=astar      # map-aware A* (default)
+./run_sim.sh mode:=scan       # reactive scan-and-go, no map needed
+./run_sim.sh mode:=bug2       # reactive Bug2 obstacle following
+```
+
 The navigator is a pure-Python state machine in
-`autonomous_bot_sim/color_navigator.py`:
+`autonomous_bot_sim/color_navigator.py`. All modes share the same
+`(progress, lateral)` dead-reckoned frame and the same FINAL finish logic.
+
+### `mode:=astar` (default)
 
 1. **SCAN** - stand still while the servo sweeps the TOF once. The
    `obstacle_randomizer` also publishes the exact box centres on
@@ -128,24 +139,45 @@ The navigator is a pure-Python state machine in
    onto the polyline and aims `0.20 m` further along it, so overshooting a
    corner cannot turn it back. Speed is reduced while the heading error is
    large and while a side sonar is very close.
-4. **Pass rule (geometry only, no box colour)** - the servo is held dead
-   straight on the way to a box. If a box still reaches the swept corridor
-   (no map, or after an unplanned deviation) the robot stops just before it
-   and picks the side that bends back toward the middle of the arena:
+4. If the layout is unknown or no path exists, it falls back to the
+   `scan` behaviour below, then plans again once more boxes are seen.
+
+### `mode:=scan` (reactive scan-and-go)
+
+1. **SCAN** - stand still while the servo sweeps the TOF and pick the most
+   open bearing (longest TOF corridor, biased toward the finish).
+2. **TURN_GO / APPROACH** - rotate in place onto that bearing, then drive
+   straight with the servo centred, stopping `DECIDE_DIST` before a box. The
+   front TOF uses a wide cone so a box just off the nose still ends the run.
+3. **Pass rule (geometry only, no box colour)** - if a box reaches the swept
+   corridor the robot stops just before it and picks the side that bends back
+   toward the middle of the arena. During the sidestep the servo makes one
+   short sweep so the front TOF can see the box it is passing:
    * obstacle on the **LEFT** -> turn **RIGHT**, sidestep, then turn **LEFT**
      to straighten, cross, and re-scan.
    * obstacle on the **RIGHT** -> turn **LEFT**, sidestep, then turn **RIGHT**
      to straighten, cross, and re-scan.
    * obstacle **straight ahead** -> stop before it and run **SCAN** again, so
-     the next scan picks an open side.
-5. **REVERSE** - if the motor is commanded forward but the nearest TOF range
+     the next scan picks an open side (limited re-scans, then force a side).
+4. **REVERSE** - if the motor is commanded forward but the nearest TOF range
    has not changed for `1.5 s` (wedged on a box or in a gap that is too
    narrow), the robot backs up `~4.5 cm`, straightens on the finish heading,
    and scans again.
-6. **FINAL** - straighten and creep forward. The run ends when the cyan strip
-   is detected and the robot has crossed it, or at the raw-TOF end-wall
-   guard (a safe stop ~8 cm before the wall). The body never touches the
-   boundary wall or a block.
+
+### `mode:=bug2`
+
+Reactive Bug2: drive toward the finish; when a box blocks the path, follow its
+boundary (keeping it on one side) until the original line to the finish is
+clear again, then resume. No map or `/obstacle_poses` is required.
+
+### Finish (all modes)
+
+**FINAL** - straighten, ease back toward the lane centre, and creep forward.
+Centring matters for the reactive modes, which can reach the finish zone well
+off to one side and otherwise slide along the end wall. The run ends when the
+cyan strip is detected and the robot has crossed it, or at the raw-TOF
+end-wall guard (a safe stop ~8 cm before the wall). The body never touches the
+boundary wall or a block.
 
 Key constants (`autonomous_bot_sim/color_navigator.py`):
 

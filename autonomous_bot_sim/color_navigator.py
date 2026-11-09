@@ -116,8 +116,8 @@ class ColorCourseNavigator:
     SIDE_HARD     = 0.100
     SIDE_REVERSE  = 0.035       # box scraping the body
     SCRAPE_T      = 1.0         # pressed on something this long -> REVERSE
-    PASS_CLEAR_MIN = 0.130
-    SIDE_CLEAR_BOX = 0.150
+    PASS_CLEAR_MIN = 0.170
+    SIDE_CLEAR_BOX = 0.180
     PASS_LAT_MAX  = 0.260
 
     # ------------------------------------------------------------- crossing
@@ -160,8 +160,8 @@ class ColorCourseNavigator:
     GAIN          = 0.02
     BUG_LANE_HALF = 0.32
     T_FOLLOW      = 25.0
-    BUG_WIGGLE    = 0.32        # servo dither (rad) while driving in bug2 mode
-    BUG_WIGGLE_T  = 1.2         # dither period (s): the TOF must cover the body width
+    BUG_WIGGLE    = 0.45        # servo dither (rad) while driving in bug2 mode
+    BUG_WIGGLE_T  = 0.8         # dither period (s): the TOF must cover the body width
 
     # ---------------------------------------------------------- recovery
     # Stuck: motor commanded forward but the TOF range does not change.
@@ -477,9 +477,16 @@ class ColorCourseNavigator:
     def servo_cmd(self, t):
         """Sweep only while scanning; hold dead straight while driving."""
         if not self.scan_active:
-            if self.mode == 'bug2' and self.state == 'GO':
+            if self.mode == 'scan' and self.state == 'SIDE_MOVE':
+                # The box being passed sits well off the straight beam; a
+                # short dither lets the front TOF see it during the sidestep.
+                return 0.40 * math.sin(2.0 * math.pi * t / 0.45)
+            if self.mode == 'bug2' and self.state in ('GO', 'B_LEAVE'):
                 # A single straight ray misses a box edge inside the 14 cm
-                # body width, so Bug2 dithers the beam while driving.
+                # body width, so Bug2 dithers the beam while driving.  Keep
+                # dithering in B_LEAVE too: the realign turn lasts over a
+                # second, which would otherwise let every off-axis sample
+                # expire and hide the box that is still beside the body.
                 return self.BUG_WIGGLE * math.sin(
                     2.0 * math.pi * t / self.BUG_WIGGLE_T)
             return 0.0
@@ -761,6 +768,27 @@ class ColorCourseNavigator:
             return 0.0, self.MAX_RANGE, False
         return best[1], best[2], best[3]
 
+    def _lateral_clear(self, side, need):
+        """True when sliding `need` sideways stays clear of boxes and walls.
+
+        Uses the scan hit points (box surfaces) from the current sweep, so a
+        box that is off to the side but invisible to the straight beam still
+        blocks the wrong detour side.
+        """
+        p0 = self.progress(self.x, self.y)
+        l0 = self.lateral(self.x, self.y)
+        margin = 0.120
+        for frac in (0.25, 0.50, 0.75, 1.0):
+            l = l0 + side * need * frac
+            if abs(l) > self.WALL_SIDE - margin:
+                return False
+            for qp, ql in self.mem_pts:
+                if abs(qp - p0) > 0.30:
+                    continue
+                if (qp - p0) ** 2 + (ql - l) ** 2 < margin ** 2:
+                    return False
+        return True
+
     def _free_side(self, lat):
         """Pick LEFT (+1) or RIGHT (-1) from wall room and scan openness."""
         room_l = self.WALL_SIDE - lat
@@ -952,7 +980,7 @@ class ColorCourseNavigator:
         return 0.0, w
 
     def _s_approach(self, t, el, prog, lat, sl, sr):
-        fr = self._front(t, 0.30)
+        fr = self._front(t, 0.60)
         dc = fr[2] if fr is not None else INF
         po = self._path_obstacle(t, half_width=0.090, max_r=0.60)
         side_min = min(sl, sr)
@@ -1090,10 +1118,52 @@ class ColorCourseNavigator:
             print('[nav] right detour blocked by wall -> mirror left', flush=True)
             side = +1
 
+        # The scan only reports the box ahead, so a second box may already be
+        # sitting on the intended detour side.  The side sonars are the veto:
+        # turn toward the freer side instead of driving into it.
+        if side < 0 and sr + 0.040 < sl and sr < 0.260:
+            print('[nav] right side blocked (L=%.2f R=%.2f) -> pass LEFT'
+                  % (sl, sr), flush=True)
+            side = +1
+        elif side > 0 and sl + 0.040 < sr and sl < 0.260:
+            print('[nav] left side blocked (L=%.2f R=%.2f) -> pass RIGHT'
+                  % (sl, sr), flush=True)
+            side = -1
+
+        # The box veto must not push the detour into a wall.
+        room_l = self.WALL_SIDE - lat
+        room_r = self.WALL_SIDE + lat
+        if side > 0 and room_l < 0.180 and room_r > room_l:
+            print('[nav] left detour still blocked by wall -> pass RIGHT',
+                  flush=True)
+            side = -1
+        elif side < 0 and room_r < 0.180 and room_l > room_r:
+            print('[nav] right detour still blocked by wall -> pass LEFT',
+                  flush=True)
+            side = +1
+
         box_rel = src[1] * math.sin(self.rel + src[0]) if src is not None else 0.0
         self.box_rel = clamp(box_rel, -0.22, 0.22)
         self.side_need = clamp(side * self.box_rel + self.SIDE_CLEAR_BOX,
                                self.PASS_CLEAR_MIN, self.PASS_LAT_MAX)
+
+        # Scan memory can veto a detour that the front beam cannot see: a
+        # second box may sit just off to the side of the chosen path.
+        if not self._lateral_clear(side, self.side_need):
+            other = -side
+            need_other = clamp(other * self.box_rel + self.SIDE_CLEAR_BOX,
+                               self.PASS_CLEAR_MIN, self.PASS_LAT_MAX)
+            if self._lateral_clear(other, need_other):
+                print('[nav] %s detour blocked by a scanned box -> pass %s'
+                      % ('LEFT' if side > 0 else 'RIGHT',
+                         'RIGHT' if other < 0 else 'LEFT'), flush=True)
+                side = other
+                self.side_need = need_other
+            else:
+                print('[nav] both lateral paths blocked -> reverse', flush=True)
+                self.blocked_side = side
+                self._enter('REVERSE', t)
+                return 0.0, 0.0
 
         self.maneuvers += 1
         self.pass_side = side
@@ -1124,11 +1194,29 @@ class ColorCourseNavigator:
         po = self._path_obstacle(t, half_width=0.090, max_r=0.45)
         ahead_d = min(fr[2] if fr is not None else INF,
                       po[2] if po is not None else INF)
-        if (dlat >= self.side_need or moved >= self.DETOUR_DIST
+        pass_sonar = sl if self.pass_side > 0 else sr
+        # Stop once the lateral offset is reached OR the diagonal has run its
+        # bounded distance; the side sonar guard below protects the detour.
+        if (dlat >= self.side_need
+                or moved >= self.DETOUR_DIST
+                or dlat >= self.PASS_LAT_MAX
                 or room <= 0.100 or el > self.T_SIDE):
             print('[nav] detour done: moved=%.2f dlat=%+.2f need=%.2f'
                   % (moved, dlat, self.side_need), flush=True)
             self._enter('TURN_BACK', t)
+            return 0.0, 0.0
+        # Something is already pressing on the detour side: stop pushing into
+        # it.  Back out if the detour has barely begun, otherwise straighten.
+        if pass_sonar < 0.045:
+            if moved < self.DETOUR_MIN_MOVE:
+                print('[nav] detour side blocked (sonar=%.2f) -> reverse'
+                      % pass_sonar, flush=True)
+                self.blocked_side = self.pass_side
+                self._enter('REVERSE', t)
+            else:
+                print('[nav] detour side tight (sonar=%.2f) -> straighten'
+                      % pass_sonar, flush=True)
+                self._enter('TURN_BACK', t)
             return 0.0, 0.0
         if ahead_d <= 0.090 and moved < self.DETOUR_MIN_MOVE:
             print('[nav] detour blocked (ahead=%.2f) -> reverse' % ahead_d,
@@ -1180,7 +1268,7 @@ class ColorCourseNavigator:
 
     # ============================================================ Bug2 states
     def _s_go(self, t, el, prog, lat, sl, sr):
-        po = self._path_obstacle(t, half_width=0.090, max_r=0.60, cone=0.60)
+        po = self._path_obstacle(t, half_width=0.110, max_r=0.60, cone=0.95)
         fc = po[2] if po is not None else INF
         sb = self._side_box(sl, sr, lat, thresh=self.BUG_HIT_SIDE)
         if fc < self.BUG_HIT_FRONT or sb != 0:
@@ -1240,7 +1328,9 @@ class ColorCourseNavigator:
         if abs(lat - self.hit_lat) > self.OFF_LINE:
             self.off_line = True
         ds = self._bug_side(sl, sr)
-        fr = self._front(t, 0.30)
+        # Wide cone: a box at the body corner while following must count as
+        # blocked, otherwise the body drives through it unseen.
+        fr = self._front(t, 0.75)
         fc = fr[2] if fr is not None else INF
         front_blocked = fc < self.INNER_FRONT
         lost = ds > self.LOST and not front_blocked
@@ -1293,9 +1383,14 @@ class ColorCourseNavigator:
 
     # ============================================================ FINAL (all)
     def _s_final(self, t, el, prog, lat, sl, sr):
-        herr = wrap(0.0 - self.rel)
+        # Creep in while easing back toward the lane centre: the reactive
+        # modes can reach the finish zone well off to one side, and a centred
+        # approach keeps the strip in view instead of sliding along the wall.
+        target = clamp(-self.K_LAT * lat,
+                       -self.LAT_HEAD_MAX, self.LAT_HEAD_MAX)
+        herr = wrap(target - self.rel)
         if abs(herr) > math.radians(8):
-            w, _ = self._turn_to(0.0, t)
+            w, _ = self._turn_to(target, t)
             return 0.0, w
 
         if prog >= self.FINISH_P:
