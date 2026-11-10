@@ -1,15 +1,16 @@
 import random
 from collections import deque
 
-# ---------- Settings (metre) ----------
+# ---------- Competition obstacle-round settings (metre) ----------
 NUM_OBSTACLES = 8
-OBS_SIZE      = 0.08           # square footprint
-OBS_HEIGHT    = 0.20
+OBS_SIZE      = 0.05           # square footprint
+OBS_HEIGHT    = 0.10
 BOT_WIDTH     = 0.14
 
-# Edge-to-edge clearance between any two boxes.  The requirement is >= 0.30 m;
-# 0.36 leaves a full robot-width corridor while keeping the scatter free.
-MIN_GAP       = 0.36
+# Edge-to-edge clearance between any two boxes.  The competition requires at
+# least 0.30 m; layouts are generated with a 0.42 m safety margin so the
+# reactive modes keep a full robot-width corridor.
+MIN_GAP       = 0.42
 
 ARENA_HALF_W  = 0.475          # inner face of the side walls
 ARENA_HALF_L  = 1.475          # inner face of the end walls
@@ -27,15 +28,15 @@ GOAL_Y        = 1.20
 OBSTACLE_COLORS = ('red', 'green')
 
 
-def _box_dist(px, py, o):
+def _box_dist(px, py, o, size=OBS_SIZE):
     """Edge-to-edge distance from point (px, py) to an axis-aligned box."""
-    h = OBS_SIZE / 2.0
+    h = size / 2.0
     dx = max(abs(px - o[0]) - h, 0.0)
     dy = max(abs(py - o[1]) - h, 0.0)
     return (dx * dx + dy * dy) ** 0.5
 
 
-def path_exists(obstacles):
+def path_exists(obstacles, size=OBS_SIZE, radius=PLAN_RADIUS):
     """BFS on a fine grid: can the robot centre reach the finish area?"""
     nx = int(2 * ARENA_HALF_W / GRID)
     ny = int(2 * ARENA_HALF_L / GRID)
@@ -46,9 +47,9 @@ def path_exists(obstacles):
 
     def free(i, j):
         x, y = centre(i, j)
-        if abs(x) > ARENA_HALF_W - PLAN_RADIUS:
+        if abs(x) > ARENA_HALF_W - radius:
             return False
-        return all(_box_dist(x, y, o) > PLAN_RADIUS for o in obstacles)
+        return all(_box_dist(x, y, o, size) > radius for o in obstacles)
 
     start = (nx // 2, int((START_Y + ARENA_HALF_L) / GRID))
     if not free(*start):
@@ -68,12 +69,13 @@ def path_exists(obstacles):
     return False
 
 
-def pick_positions(rng=random, n=NUM_OBSTACLES):
+def pick_positions(rng=random, n=NUM_OBSTACLES, size=OBS_SIZE,
+                   min_gap=MIN_GAP, x_range=X_RANGE, y_range=Y_RANGE):
     """Scatter n boxes uniformly across the whole arena.
 
-    Every box centre is drawn independently from ``X_RANGE`` x ``Y_RANGE`` and
+    Every box centre is drawn independently from ``x_range`` x ``y_range`` and
     kept only if its true edge-to-edge distance to every accepted box is at
-    least ``MIN_GAP``.  Because the sampling is uniform over the full width,
+    least ``min_gap``.  Because the sampling is uniform over the full width,
     layouts are genuinely different each run and boxes land in the middle lane
     as often as near the walls (unlike a fixed 2-column grid).
 
@@ -85,15 +87,15 @@ def pick_positions(rng=random, n=NUM_OBSTACLES):
         ok = True
         for _ in range(n):
             for _ in range(400):
-                x = rng.uniform(*X_RANGE)
-                y = rng.uniform(*Y_RANGE)
-                if all(_box_dist(x, y, p) >= MIN_GAP for p in pts):
+                x = rng.uniform(*x_range)
+                y = rng.uniform(*y_range)
+                if all(_box_dist(x, y, p, size) >= min_gap for p in pts):
                     pts.append((x, y))
                     break
             else:
                 ok = False
                 break
-        if ok and path_exists(pts):
+        if ok and path_exists(pts, size):
             return pts
 
     # Very unlikely fallback: staggered three-column pattern with valid gaps.
@@ -103,7 +105,7 @@ def pick_positions(rng=random, n=NUM_OBSTACLES):
                     (0.28, (-0.95, -0.05, 0.85))):
         for y in rows:
             pts.append((x, y))
-    if path_exists(pts):
+    if path_exists(pts, size):
         return pts
     raise RuntimeError('Could not find a valid scattered layout')
 

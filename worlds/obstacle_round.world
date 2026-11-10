@@ -2,6 +2,11 @@
 <sdf version="1.6">
   <world name="autonomous_arena_world">
 
+    <!-- ===== COMPETITION OBSTACLE ROUND =====
+         1 m x 3 m interior, 10 cm tall boundary walls, finish line 30 cm
+         before the end-wall inner face.  The navigator's WALL_P / WALL_SIDE
+         constants match these interior faces. ===== -->
+
     <!-- ===== 1. LIGHTING & PHYSICS ===== -->
     <include><uri>model://sun</uri></include>
     <include><uri>model://ground_plane</uri></include>
@@ -29,14 +34,14 @@
       </camera>
     </gui>
 
-    <!-- ===== 2. ARENA: 1.0 m (X) x 3.0 m (Y), wall height 0.2 m ===== -->
+    <!-- ===== 2. ARENA: interior 1.0 m (X) x 3.0 m (Y), 10 cm tall walls ===== -->
     <model name="wall_north">
       <static>true</static>
-      <pose>0.0 1.5 0.1 0 0 0</pose>
+      <pose>0.0 1.5 0.05 0 0 0</pose>
       <link name="link">
-        <collision name="collision"><geometry><box><size>1.0 0.05 0.2</size></box></geometry></collision>
+        <collision name="collision"><geometry><box><size>1.0 0.05 0.1</size></box></geometry></collision>
         <visual name="visual">
-          <geometry><box><size>1.0 0.05 0.2</size></box></geometry>
+          <geometry><box><size>1.0 0.05 0.1</size></box></geometry>
           <material><ambient>0.1 0.1 0.1 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
         </visual>
       </link>
@@ -44,11 +49,11 @@
 
     <model name="wall_south">
       <static>true</static>
-      <pose>0.0 -1.5 0.1 0 0 0</pose>
+      <pose>0.0 -1.5 0.05 0 0 0</pose>
       <link name="link">
-        <collision name="collision"><geometry><box><size>1.0 0.05 0.2</size></box></geometry></collision>
+        <collision name="collision"><geometry><box><size>1.0 0.05 0.1</size></box></geometry></collision>
         <visual name="visual">
-          <geometry><box><size>1.0 0.05 0.2</size></box></geometry>
+          <geometry><box><size>1.0 0.05 0.1</size></box></geometry>
           <material><ambient>0.1 0.1 0.1 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
         </visual>
       </link>
@@ -56,11 +61,11 @@
 
     <model name="wall_east">
       <static>true</static>
-      <pose>0.5 0.0 0.1 0 0 0</pose>
+      <pose>0.5 0.0 0.05 0 0 0</pose>
       <link name="link">
-        <collision name="collision"><geometry><box><size>0.05 3.0 0.2</size></box></geometry></collision>
+        <collision name="collision"><geometry><box><size>0.05 3.0 0.1</size></box></geometry></collision>
         <visual name="visual">
-          <geometry><box><size>0.05 3.0 0.2</size></box></geometry>
+          <geometry><box><size>0.05 3.0 0.1</size></box></geometry>
           <material><ambient>0.1 0.1 0.1 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
         </visual>
       </link>
@@ -68,20 +73,19 @@
 
     <model name="wall_west">
       <static>true</static>
-      <pose>-0.5 0.0 0.1 0 0 0</pose>
+      <pose>-0.5 0.0 0.05 0 0 0</pose>
       <link name="link">
-        <collision name="collision"><geometry><box><size>0.05 3.0 0.2</size></box></geometry></collision>
+        <collision name="collision"><geometry><box><size>0.05 3.0 0.1</size></box></geometry></collision>
         <visual name="visual">
-          <geometry><box><size>0.05 3.0 0.2</size></box></geometry>
+          <geometry><box><size>0.05 3.0 0.1</size></box></geometry>
           <material><ambient>0.1 0.1 0.1 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
         </visual>
       </link>
     </model>
 
     <!-- ===== 3. START LINE (yellow) & FINISH LINE (cyan) - visual only =====
-         The finish line uses CYAN (not green) so the green obstacles can
-         never be mistaken for it.  The controller looks for cyan only in the
-         bottom rows of the angled camera. ===== -->
+         End-wall inner face is y=+1.475, so the finish line sits 30 cm
+         before it at y=+1.175.  Cyan is never confused with green boxes. ===== -->
     <model name="start_line">
       <static>true</static>
       <pose>0.0 -1.35 0.001 0 0 0</pose>
@@ -95,7 +99,7 @@
 
     <model name="finish_line">
       <static>true</static>
-      <pose>0.0 1.30 0.001 0 0 0</pose>
+      <pose>0.0 1.175 0.001 0 0 0</pose>
       <link name="link">
         <visual name="visual">
           <geometry><box><size>0.95 0.04 0.002</size></box></geometry>

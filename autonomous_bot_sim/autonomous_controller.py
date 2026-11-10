@@ -66,8 +66,20 @@ LATCH_QOS = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
 class AutonomousController(Node):
     def __init__(self):
         super().__init__('autonomous_controller')
-        self.nav = ColorCourseNavigator()
         self.declare_parameter('mode', 'astar')
+        self.declare_parameter('obs_size', 0.08)
+        # < 0 means "use the navigator's built-in finish target".
+        self.declare_parameter('finish_y', -1.0)
+        self.declare_parameter('start_hold', 0.0)
+        # Open round direction for the real robot (simulation overrides it
+        # with the latched /open_clockwise topic from the randomizer).
+        self.declare_parameter('open_clockwise', False)
+        finish_y = float(self.get_parameter('finish_y').value)
+        self.open_cw = bool(self.get_parameter('open_clockwise').value)
+        self.nav = ColorCourseNavigator(
+            obs_size=float(self.get_parameter('obs_size').value),
+            finish_y=None if finish_y < 0.0 else finish_y,
+            open_clockwise=self.open_cw)
         self.nav.set_mode(str(self.get_parameter('mode').value))
         self.add_on_set_parameters_callback(self._on_params)
         
@@ -120,6 +132,17 @@ class AutonomousController(Node):
                                  self.obstacle_cb, LATCH_QOS,
                                  callback_group=self.cb_group)
 
+        # --- open-round random start (simulation) --------------------------
+        # Latched by open_start_randomizer.  On the real robot these topics do
+        # not exist, and the `open_clockwise` parameter above is used instead.
+        self.open_pose = None       # (x, y, yaw) in world coordinates
+        self.create_subscription(PoseStamped, '/open_start_pose',
+                                 self.open_pose_cb, LATCH_QOS,
+                                 callback_group=self.cb_group)
+        self.create_subscription(Bool, '/open_clockwise',
+                                 self.open_cw_cb, LATCH_QOS,
+                                 callback_group=self.cb_group)
+
         # --- odometry / IMU ---
         self.have_odom = False
         self.x = self.y = self.yaw = 0.0
@@ -145,7 +168,8 @@ class AutonomousController(Node):
         self.create_subscription(JointState, '/joint_states', self.joint_cb,
                                  SENSOR_QOS, callback_group=self.cb_group)
 
-        self.state = 'IDLE'          # IDLE -> ALIGNING -> ALIGN_WAIT -> RUNNING -> FINISHED
+        self.state = 'IDLE'          # IDLE -> ALIGNING -> ALIGN_WAIT -> HOLD -> RUNNING -> FINISHED
+        self.start_hold = 0.0
         self.align_future = None
         self.align_done_t = None
         self.align_request_t = None
@@ -166,6 +190,9 @@ class AutonomousController(Node):
         for p in params:
             if p.name == 'mode':
                 self.nav.set_mode(str(p.value))
+            elif p.name == 'open_clockwise':
+                self.open_cw = bool(p.value)
+                self.nav.set_open_clockwise(self.open_cw)
         return SetParametersResult(successful=True)
     def left_cb(self, msg):
         self.sonar_left = self._clean_range(msg)
@@ -234,6 +261,23 @@ class AutonomousController(Node):
         if self.state == 'RUNNING':
             self._send_obstacles()
 
+    def open_pose_cb(self, msg):
+        q = msg.pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        self.open_pose = (float(msg.pose.position.x),
+                          float(msg.pose.position.y), yaw)
+        self.get_logger().info(
+            'Open start pose received: (%.3f, %.3f) yaw %.1f deg'
+            % (self.open_pose[0], self.open_pose[1], math.degrees(yaw)))
+
+    def open_cw_cb(self, msg):
+        self.open_cw = bool(msg.data)
+        self.nav.set_open_clockwise(self.open_cw)
+        self.get_logger().info(
+            'Open direction: %s'
+            % ('clockwise' if self.open_cw else 'counter-clockwise'))
+
     def _send_obstacles(self):
         """Convert world box centres into the navigator (progress, lateral)
         frame and hand them to the planner."""
@@ -291,6 +335,17 @@ class AutonomousController(Node):
         if self.vision_t <= 0.0:
             self.vision_t = self.get_clock().now().nanoseconds / 1e9
 
+    def _target_start_pose(self):
+        """World pose to snap to on START, or None to run from here.
+
+        The obstacle round always uses the fixed start line.  The open round
+        uses the latched randomizer pose in simulation; on the real robot no
+        pose is published, so the robot simply starts from where it is.
+        """
+        if self.nav.mode == 'open':
+            return self.open_pose
+        return (0.0, -1.35, math.pi / 2.0)
+
     def start_cb(self, msg):
         if not msg.data or self.state != 'IDLE':
             return
@@ -302,22 +357,56 @@ class AutonomousController(Node):
         # lets it creep ~0.1 m while the contacts settle, which would offset
         # every progress-based stop.  This is asynchronous; control_loop
         # finishes the start once the service answers and the IMU has settled.
-        if self.set_state_cli.service_is_ready():
+        pose = self._target_start_pose()
+        if pose is not None and self.set_state_cli.service_is_ready():
+            sx, sy, syaw = pose
             req = SetEntityState.Request()
             req.state.name = 'autonomous_bot'
-            req.state.pose.position.x = 0.0
-            req.state.pose.position.y = -1.35
+            req.state.pose.position.x = float(sx)
+            req.state.pose.position.y = float(sy)
             req.state.pose.position.z = 0.005
-            req.state.pose.orientation.z = 0.7071068
-            req.state.pose.orientation.w = 0.7071068
+            req.state.pose.orientation.x = 0.0
+            req.state.pose.orientation.y = 0.0
+            req.state.pose.orientation.z = math.sin(syaw / 2.0)
+            req.state.pose.orientation.w = math.cos(syaw / 2.0)
             self.align_future = self.set_state_cli.call_async(req)
             self.align_request_t = self.get_clock().now().nanoseconds / 1e9
             self.state = 'ALIGNING'
-            self.get_logger().info('START requested: aligning on the start line...')
+            self.get_logger().info(
+                'START requested: aligning at (%.3f, %.3f) yaw %.1f deg...'
+                % (sx, sy, math.degrees(syaw)))
             return
+        if self.nav.mode == 'open' and pose is None:
+            self.get_logger().warn(
+                'No /open_start_pose received; starting from the current '
+                'pose (use the open_clockwise parameter on real hardware).')
         self._begin_run()
 
     def _begin_run(self):
+        if self.nav.mode == 'open':
+            # Open round: the navigator only needs the initial tangent
+            # (heading 0) and the assigned direction.
+            self.nav.set_open_clockwise(self.open_cw)
+            self.imu_yaw0 = self.imu_yaw
+            self.dr_x = self.dr_y = 0.0
+            self.dr_t = self.get_clock().now().nanoseconds / 1e9
+            self.last_v_cmd = 0.0
+            self.start_x, self.start_y, self.start_yaw = (
+                self.open_pose if self.open_pose is not None
+                else (0.0, 0.0, 0.0))
+            self.nav.reset(0.0, 0.0, 0.0)
+            self.start_t_abs = self.get_clock().now().nanoseconds / 1e9
+            self.start_hold = max(0.0, float(
+                self.get_parameter('start_hold').value))
+            self.state = 'HOLD' if self.start_hold > 0.0 else 'RUNNING'
+            self.get_logger().info(
+                f'OPEN ROUND START! Direction: '
+                f'{"clockwise" if self.open_cw else "counter-clockwise"}. '
+                f'Timer started'
+                + (f', holding still for {self.start_hold:.1f} s.'
+                   if self.start_hold > 0.0 else '.'))
+            return
+
         # The navigator works in its own lane frame: (0, 0) at the start pose,
         # heading 0 toward the finish.  Dead reckoning replaces the drifting
         # wheel-odometry x/y (see __init__).
@@ -334,10 +423,14 @@ class AutonomousController(Node):
         self.nav.reset(0.0, 0.0, 0.0)
         self._send_obstacles()
         self.start_t_abs = self.get_clock().now().nanoseconds / 1e9
-        self.state = 'RUNNING'
+        self.start_hold = max(0.0, float(
+            self.get_parameter('start_hold').value))
+        self.state = 'HOLD' if self.start_hold > 0.0 else 'RUNNING'
         self.get_logger().info(
             f'START! Heading source: {"IMU" if self.have_imu else "odom"}. '
-            f'Timer started.')
+            f'Timer started'
+            + (f', holding still for {self.start_hold:.1f} s.'
+               if self.start_hold > 0.0 else '.'))
 
     # --------------------------------------------------------------- helpers
     def _dead_reckon(self, t_abs):
@@ -455,6 +548,17 @@ class AutonomousController(Node):
             self.pub.publish(Twist())
             return
 
+        if self.state == 'HOLD':
+            # Mandatory stationary start hold.  The clock is already running,
+            # so these seconds count toward the challenge time.
+            self.pub.publish(Twist())
+            if self.elapsed() >= self.start_hold:
+                self.state = 'RUNNING'
+                self.get_logger().info(
+                    f'Start hold complete after {self.start_hold:.1f} s '
+                    f'(elapsed {self.elapsed():.2f} s).')
+            return
+
         if self.state != 'RUNNING':
             # Actively hold the wheels still: the diff-drive plugin otherwise
             # lets the freshly spawned bot creep a few cm before START, which
@@ -472,7 +576,8 @@ class AutonomousController(Node):
         self._dead_reckon(t_abs)
 
         fresh = (t_abs - self.vision_t) < VISION_TIMEOUT
-        finish = fresh and self.finish_px >= FINISH_PIX
+        finish = (self.nav.mode != 'open'
+                  and fresh and self.finish_px >= FINISH_PIX)
 
         v, w = self.nav.step(x=self.dr_x, y=self.dr_y, rel=self.heading(),
                              t=t_abs,
@@ -510,12 +615,13 @@ def main(args=None):
             except ExternalShutdownException:
                 break
             except RuntimeError as exc:
+                if not rclpy.ok():
+                    # Shutdown race: the context can be torn down mid-take.
+                    break
                 now = time.monotonic()
                 if now - last_warn > 1.0:
-                    import traceback
                     node.get_logger().warning(
-                        f'Dropped one malformed sensor sample: {exc}\n'
-                        + traceback.format_exc())
+                        f'Dropped one malformed sensor sample: {exc}')
                     last_warn = now
                 # A failed take can leave the old executor's task table
                 # wedged.  Abandon it (do NOT call shutdown(), which waits for

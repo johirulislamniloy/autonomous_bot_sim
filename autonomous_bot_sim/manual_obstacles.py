@@ -67,6 +67,10 @@ class ManualObstacles(Node):
         self.declare_parameter('layout_file', '')
         self.declare_parameter('resume_after_spawn', True)
         self.declare_parameter('keep_paused', False)
+        self.declare_parameter('obstacle_size', OBS_SIZE)
+        self.declare_parameter('obstacle_height', OBS_HEIGHT)
+        self.obs_size = float(self.get_parameter('obstacle_size').value)
+        self.obs_height = float(self.get_parameter('obstacle_height').value)
 
         self.pose_pub = self.create_publisher(PoseArray, '/obstacle_poses',
                                               LATCH_QOS)
@@ -108,7 +112,7 @@ class ManualObstacles(Node):
             pose = Pose()
             pose.position.x = x
             pose.position.y = y
-            pose.position.z = OBS_HEIGHT / 2.0
+            pose.position.z = self.obs_height / 2.0
             pose.orientation.w = 1.0
             layout.poses.append(pose)
         self.pose_pub.publish(layout)
@@ -132,7 +136,7 @@ class ManualObstacles(Node):
         return future.result()
 
     def _sdf(self, name, color):
-        s, h = OBS_SIZE, OBS_HEIGHT
+        s, h = self.obs_size, self.obs_height
         r, g, b = COLOR_RGB.get(color, COLOR_RGB['red'])
         return f"""<?xml version="1.0"?>
 <sdf version="1.6">
@@ -186,7 +190,7 @@ class ManualObstacles(Node):
             req.robot_namespace = ''
             req.initial_pose.position.x = float(item['x'])
             req.initial_pose.position.y = float(item['y'])
-            req.initial_pose.position.z = OBS_HEIGHT / 2.0
+            req.initial_pose.position.z = self.obs_height / 2.0
             req.initial_pose.orientation.w = 1.0
             result = self._call(SpawnEntity, '/spawn_entity', req)
             if result is not None and result.success:

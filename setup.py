@@ -26,6 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             'obstacle_randomizer = autonomous_bot_sim.obstacle_randomizer:main',
+            'open_start_randomizer = autonomous_bot_sim.open_start_randomizer:main',
             'autonomous_controller = autonomous_bot_sim.autonomous_controller:main',
             'start_button = autonomous_bot_sim.start_button:main',
             'manual_obstacles = autonomous_bot_sim.manual_obstacles:main',

@@ -1,0 +1,103 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <world name="open_round_world">
+
+    <!-- ===== COMPETITION OPEN ROUND =====
+         3.0 m x 3.0 m outer square, 1.0 m wide track, 10 cm high black
+         walls.  The inner block is 1.0 m x 1.0 m, so its outer faces sit at
+         x,y = +-0.5 m and the outer-wall inner faces at +-1.5 m.  The robot
+         drives on the 2.0 m x 2.0 m centreline (8.0 m per lap).
+         The start/finish line is spawned at run time by
+         open_start_randomizer.py, because its position and the driving
+         direction are randomised for every run. ===== -->
+
+    <!-- ===== 1. LIGHTING & PHYSICS ===== -->
+    <include><uri>model://sun</uri></include>
+    <include><uri>model://ground_plane</uri></include>
+
+    <!-- ROS 2 state interface: lets the launch/controller place the robot
+         exactly at the random start pose and read its world pose. -->
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+      <ros>
+        <namespace>/</namespace>
+      </ros>
+      <update_rate>30.0</update_rate>
+    </plugin>
+
+    <physics name="default_physics" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000.0</real_time_update_rate>
+    </physics>
+
+    <!-- camera: elevated view of the whole 3 x 3 m ring -->
+    <gui>
+      <camera name="user_camera">
+        <pose>0 -4.6 3.6 0 0.68 1.5708</pose>
+      </camera>
+    </gui>
+
+    <!-- ===== 2. OUTER WALLS (inner faces at +-1.5 m) ===== -->
+    <model name="wall_north">
+      <static>true</static>
+      <pose>0.0 1.525 0.05 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>3.1 0.05 0.1</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>3.1 0.05 0.1</size></box></geometry>
+          <material><ambient>0.02 0.02 0.02 1</ambient><diffuse>0.02 0.02 0.02 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_south">
+      <static>true</static>
+      <pose>0.0 -1.525 0.05 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>3.1 0.05 0.1</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>3.1 0.05 0.1</size></box></geometry>
+          <material><ambient>0.02 0.02 0.02 1</ambient><diffuse>0.02 0.02 0.02 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_east">
+      <static>true</static>
+      <pose>1.525 0.0 0.05 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.05 3.1 0.1</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.05 3.1 0.1</size></box></geometry>
+          <material><ambient>0.02 0.02 0.02 1</ambient><diffuse>0.02 0.02 0.02 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_west">
+      <static>true</static>
+      <pose>-1.525 0.0 0.05 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.05 3.1 0.1</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>0.05 3.1 0.1</size></box></geometry>
+          <material><ambient>0.02 0.02 0.02 1</ambient><diffuse>0.02 0.02 0.02 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ===== 3. INNER BLOCK (outer faces at +-0.5 m) ===== -->
+    <model name="inner_block">
+      <static>true</static>
+      <pose>0.0 0.0 0.05 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.0 1.0 0.1</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>1.0 1.0 0.1</size></box></geometry>
+          <material><ambient>0.02 0.02 0.02 1</ambient><diffuse>0.02 0.02 0.02 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

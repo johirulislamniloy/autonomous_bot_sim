@@ -1,8 +1,15 @@
 # autonomous_bot_sim
 
 Gazebo classic + ROS 2 Humble simulation of a small differential-drive robot
-that crosses a 1 m x 3 m arena filled with **8 randomly scattered red/green
-obstacle blocks** and stops safely on the cyan finish line.
+for the **two rounds of the autonomous bot competition**.
+
+| Round | World | Goal |
+|---|---|---|
+| **Obstacle round** (default) | `worlds/obstacle_round.world` | cross a 1 m x 3 m arena filled with 8 scattered blocks and stop on the finish line |
+| **Open round** | `worlds/open_round.world` | follow a 1 m wide square ring for 3 complete laps and stop on the starting side |
+
+Both rounds use the same robot, the same 5 s stationary start, and the same
+`run_sim.sh` one-command workflow. A 10 cm wall is used in both worlds.
 
 Repository: <https://github.com/johirulislamniloy/autonomous_bot_sim>
 
@@ -10,215 +17,152 @@ Repository: <https://github.com/johirulislamniloy/autonomous_bot_sim>
 
 | Sensor | Topic | Purpose |
 |---|---|---|
-| Servo-mounted TOF | `/tof_range` + `/set_joint_trajectory` | forward polar scan |
-| Left ultrasonic sonar | `/sonar_left` | keep the body off side obstacles |
-| Right ultrasonic sonar | `/sonar_right` | keep the body off side obstacles |
-| Angled camera (0.35 rad down) | `/front_camera/image_raw` | cyan finish line only |
-| IMU | `/imu/data` | heading hold, straightening, dead-reckoned progress |
+| Servo-mounted TOF | `/tof_range` + `/set_joint_trajectory` | forward polar scan / corner detection |
+| Left ultrasonic sonar | `/sonar_left` | track following and side clearance |
+| Right ultrasonic sonar | `/sonar_right` | track following and side clearance |
+| Angled camera (0.35 rad down) | `/front_camera/image_raw` | cyan finish strip (obstacle round) |
+| IMU | `/imu/data` | heading hold, straightening, 90 deg corner turns |
 | Wheel odometry | `/odom` | RViz trail and heading fallback |
 
 The two side sonars are simulated ray sensors in `urdf/robot.urdf.xacro`.
 Each publishes a `sensor_msgs/Range` whose value is the minimum of 5 rays in
-a `0.42 rad` half-cone, so the side cones overlap the front TOF sweep and
-leave no blind arc next to the nose.
+a `0.30 rad` half-cone, so the side cones overlap the front TOF sweep. The
+servo/TOF pivot sits at ~8 cm above the floor, below the top of the 10 cm
+walls, so it sees both walls and blocks.
 
-## Arena and obstacle layout
+The simulated ray length (`ray_max`) is 5.5 m, longer than either world's
+diagonal. `libgazebo_ros_ray_sensor` reports `FLT_MAX` when a ray hits nothing,
+and rclpy cannot deserialise that value; with a long-enough ray every
+horizontal ray in an enclosed world hits a wall, so only finite ranges are
+published.
 
-The arena is **1 m x 3 m**. The robot starts on the yellow line at
-`(x=0, y=-1.35)` facing `+Y`; the cyan finish strip is at `y=+1.30` and the
-end-wall inner face is at `y=+1.475`.
+---
 
-Every launch (`seed:=-1`) scatters **exactly 8 square blocks** (0.08 m x
-0.08 m x 0.20 m), **4 red and 4 green in a freshly shuffled order**.
+## Obstacle round (default)
+
+The arena is **1 m x 3 m** with **10 cm tall** boundary walls. The robot
+starts on the yellow line at `(x=0, y=-1.35)` facing `+Y`; the cyan finish
+strip is at `y=+1.175`, 30 cm before the end-wall inner face.
+
+Every launch (`seed:=-1`) scatters **exactly 8 black-edged competition blocks**
+of **5 cm x 5 cm x 10 cm**, 4 red and 4 green in a freshly shuffled order.
+Colours are visual only; the navigator never reads them.
 
 Placement rules (`autonomous_bot_sim/arena_layout.py`):
 
-* every box centre is drawn independently from the **whole arena**:
-  `x in [-0.33, 0.33]`, `y in [-1.05, 0.90]`. The sampling is uniform over the
-  full width, so blocks land in the middle lane as often as near the walls
-  (no fixed left/right columns);
-* each new box is kept only if its true edge-to-edge distance to every other
-  box is at least **0.36 m**, safely above the required **0.30 m** minimum;
-* a BFS on a 2 cm grid checks that at least one **0.125 m-radius free
-  corridor** still connects the start to the finish before a layout is
-  accepted. The start and finish zones stay clear.
+* every box centre is drawn from the whole arena
+  `x in [-0.33, 0.33]`, `y in [-1.05, 0.90]`;
+* each new box keeps a true edge-to-edge distance of at least **0.42 m** to
+  every other box (above the required 0.30 m minimum), so the reactive modes
+  keep a full robot-width corridor;
+* a BFS on a 2 cm grid checks that a 0.125 m-radius free corridor still
+  connects the start to the finish before a layout is accepted.
 
-In practice ~84% of generated layouts contain at least one block inside the
-central `|x| < 0.10 m` lane, and consecutive launches look clearly different.
-Use `seed:=123` for a repeatable layout, or leave `seed:=-1` (default) for a
-new arrangement on every run.
-
-## Pause and place obstacles yourself
-
-Start in manual mode, paused, with the robot held until you are ready:
+The run starts with a **5 s stationary hold**, counted in the challenge time.
+The obstacle-round modes are `astar`, `scan` and `bug2`.
 
 ```bash
-./run_sim.sh randomize:=false start_paused:=true auto_start:=false
+./run_sim.sh                  # astar (default)
+./run_sim.sh mode:=scan
+./run_sim.sh mode:=bug2
+./run_sim.sh seed:=123        # repeatable layout
 ```
 
-Then, in the Gazebo window:
+### Obstacle-round navigation (`mode:=astar|scan|bug2`)
 
-1. Use **Insert -> Box** and drag/rotate the box with the translate/rotate
-   tools, or spawn boxes from the terminal (see the YAML method below).
-2. Boxes whose names start with `obstacle`, `unit_box` or `box` are picked up
-   automatically and published on `/obstacle_poses`, so the planner uses
-   exactly the layout you placed. Walls, ground and the robot are ignored.
-3. Resume the physics, then start the run with
-   `ros2 run autonomous_bot_sim start_button` (press ENTER).
+* **`astar`** - the randomizer publishes the exact box centres on
+  `/obstacle_poses`; a grid A* with a 0.125 m clearance finds a path to the
+  finish, which is followed with pure pursuit. If no path exists it falls back
+  to the reactive scan behaviour and replans later.
+* **`scan`** - reactive scan-and-go: stand still and sweep the servo/TOF, pick
+  the most open bearing, drive straight, then pass each box on the side that
+  bends back toward the arena middle.
+* **`bug2`** - classic Bug2 on the finish line: drive along the M-line, and on
+  a hit follow the box boundary until the line is clear again.
+* **FINAL** (all three) - straighten, ease back to the lane centre and creep
+  onto the cyan strip. The robot stops on the line or at the end-wall guard,
+  without touching a wall or a block.
+* **ESCAPE** - with no wheel encoders, a stall is detected from the sensors
+  only (flat close TOF, pressed side sonar, or flat IMU yaw while turning).
+  The robot reverses while probing for room, straightens, and resumes.
 
-Pause and resume at any time from another terminal:
+All obstacle rounds use the same dead-reckoned `(progress, lateral)` frame.
+At START the controller re-teleports the robot exactly onto the start line so
+physics settling cannot bias the run.
+
+---
+
+## Open round (`mode:=open`)
+
+The arena is a **3 m x 3 m outer square** with a **1 m x 1 m inner block**, so
+the track is **1 m wide**. All walls are **10 cm high** and black. The robot
+drives on the 2 m x 2 m centreline: **8 m per lap**, **24 m for 3 laps**.
+
+Rules implemented:
+
+* **5 s stationary start** (counted in the run time);
+* **3 complete laps**, then stop on the **starting side**;
+* the driving direction (**clockwise / counter-clockwise**) is assigned
+  randomly for every run;
+* the start position along the starting side is also random;
+* no wall contact: the robot stays on the 1 m centreline.
 
 ```bash
-ros2 service call /pause_physics   std_srvs/srv/Empty
-ros2 service call /unpause_physics std_srvs/srv/Empty
+./run_sim.sh mode:=open
+./run_sim.sh mode:=open seed:=7       # repeatable random start/direction
+./run_sim.sh mode:=open gui:=false rviz:=false
 ```
 
-> Gazebo only refreshes `/model_states` while physics is running, so the new
-> boxes are published to the planner after you resume. That is why the robot
-> should still be stopped (`auto_start:=false`) while you place them.
+### Open-round navigation
 
-### Reproducible layout from a YAML file
+The open round lives in the same navigator file
+(`autonomous_bot_sim/color_navigator.py`) as the obstacle modes. It uses:
 
-Instead of dragging boxes, describe them in a file:
+1. **Outer-wall following** - the outer wall is continuous around the ring.
+   The side sonar holds the robot at a **0.425 m** reading, which is the
+   centreline (< 0.5 m wall distance minus the 0.075 m sonar offset).
+2. **Inner-block guard** - if the inner sonar gets closer than 0.255 m, the
+   robot steers away from the block. This prevents corner cutting.
+3. **90 deg corner turns** - when the front TOF sees the outer wall of the next
+   side (`< 0.48 m`), the robot stops and turns 90 deg toward the inner block
+   using the IMU. The turn direction follows the assigned lap direction.
+4. **Lap counting** - the navigator integrates the dead-reckoned centreline
+   distance. After the 12th corner it drives the same offset that separated the
+   start point from the first corner and stops on the original start line.
+5. **Stall guard** - if the front wall stays flat much closer than the corner
+   trigger, the robot backs off briefly and resumes.
 
-```yaml
-obstacles:
-  - {x: -0.21, y: -1.01, color: red}
-  - {x: -0.17, y:  0.42, color: green}
-  - {x:  0.00, y:  0.10, color: red}
-```
+The corner logic and lap counter need no wheel encoders and no world map.
 
-Then either launch directly with it:
+### Random start / direction
+
+`autonomous_bot_sim/open_start_randomizer.py` mirrors the event setup:
+
+* picks one of the four sides, a random position away from the corners, and a
+  random clockwise/counter-clockwise direction;
+* spawns a cyan start/finish line at that pose;
+* publishes the pose on `/open_start_pose` and the direction on
+  `/open_clockwise` (both latched);
+* the controller teleports the robot to that pose on START and passes the
+  direction to the navigator.
+
+Use `seed:=123` for a repeatable start; leave the default `seed:=-1` for a new
+random start on every run.
+
+### Real hardware
+
+The randomizer is simulation-only. On the real robot, place the robot on the
+start line yourself and pass the direction assigned at the event:
 
 ```bash
-./run_sim.sh randomize:=false \
-  manual_layout:=$PWD/config/manual_example.yaml
+./run_sim.sh mode:=open open_clockwise:=true    # clockwise
+./run_sim.sh mode:=open open_clockwise:=false   # counter-clockwise
 ```
 
-or start manual mode and load it later:
+The navigator only needs relative heading and the side sonars, so it does not
+require world coordinates.
 
-```bash
-ros2 run autonomous_bot_sim manual_obstacles \
-  --ros-args -p layout_file:=$PWD/config/manual_example.yaml
-```
-
-`manual_obstacles` pauses physics, removes old `obstacle_*` boxes, spawns the
-file, publishes `/obstacle_poses`, and resumes. Add
-`-p resume_after_spawn:=false` to leave the world paused for inspection.
-A ready-to-edit example is in `config/manual_example.yaml`.
-
-Coordinates are world metres. Keep boxes inside `x in [-0.33, 0.33]`,
-`y in [-1.05, 0.90]` and leave at least 0.30 m edge-to-edge between boxes.
-The `color` field only sets the box material; navigation ignores it.
-
-## Navigation
-
-Pick the algorithm with `mode:=astar|scan|bug2` (default `astar`):
-
-```bash
-./run_sim.sh mode:=astar      # map-aware A* (default)
-./run_sim.sh mode:=scan       # reactive scan-and-go, no map needed
-./run_sim.sh mode:=bug2       # reactive Bug2 obstacle following
-```
-
-The navigator is a pure-Python state machine in
-`autonomous_bot_sim/color_navigator.py`. All modes share the same
-`(progress, lateral)` dead-reckoned frame and the same FINAL finish logic.
-
-### `mode:=astar` (default)
-
-1. **SCAN** - stand still while the servo sweeps the TOF once. The
-   `obstacle_randomizer` also publishes the exact box centres on
-   `/obstacle_poses`; the navigator projects them into its own
-   `(progress, lateral)` frame.
-2. **PLAN** - a grid A* over the known boxes, with a clearance check on every
-   cell, picks a path to the finish. The path is line-of-sight smoothed and
-   biased toward the middle of each corridor. This guarantees the 0.125 m
-   clearance that the layout generator verified.
-3. **FOLLOW** - pure-pursuit tracking of the path: the robot projects itself
-   onto the polyline and aims `0.20 m` further along it, so overshooting a
-   corner cannot turn it back. Speed is reduced while the heading error is
-   large and while a side sonar is very close.
-4. If the layout is unknown or no path exists, it falls back to the
-   `scan` behaviour below, then plans again once more boxes are seen.
-
-### `mode:=scan` (reactive scan-and-go)
-
-1. **SCAN** - stand still while the servo sweeps the TOF and pick the most
-   open bearing (longest TOF corridor, biased toward the finish).
-2. **TURN_GO / APPROACH** - rotate in place onto that bearing, then drive
-   straight with the servo centred, stopping `DECIDE_DIST` before a box. The
-   front TOF uses a wide cone so a box just off the nose still ends the run.
-3. **Pass rule (geometry only, no box colour)** - if a box reaches the swept
-   corridor the robot stops just before it and picks the side that bends back
-   toward the middle of the arena. During the sidestep the servo makes one
-   short sweep so the front TOF can see the box it is passing:
-   * obstacle on the **LEFT** -> turn **RIGHT**, sidestep, then turn **LEFT**
-     to straighten, cross, and re-scan.
-   * obstacle on the **RIGHT** -> turn **LEFT**, sidestep, then turn **RIGHT**
-     to straighten, cross, and re-scan.
-   * obstacle **straight ahead** -> stop before it and run **SCAN** again, so
-     the next scan picks an open side (limited re-scans, then force a side).
-4. **REVERSE** - if the motor is commanded forward but the nearest TOF range
-   has not changed for `1.5 s` (wedged on a box or in a gap that is too
-   narrow), the robot backs up `~4.5 cm`, straightens on the finish heading,
-   and scans again.
-
-### `mode:=bug2`
-
-Reactive Bug2: drive toward the finish; when a box blocks the path, follow its
-boundary (keeping it on one side) until the original line to the finish is
-clear again, then resume. No map or `/obstacle_poses` is required.
-
-### Finish (all modes)
-
-**FINAL** - straighten, ease back toward the lane centre, and creep forward.
-Centring matters for the reactive modes, which can reach the finish zone well
-off to one side and otherwise slide along the end wall. The run ends when the
-cyan strip is detected and the robot has crossed it, or at the raw-TOF
-end-wall guard (a safe stop ~8 cm before the wall). The body never touches the
-boundary wall or a block.
-
-Key constants (`autonomous_bot_sim/color_navigator.py`):
-
-| Constant | Value | Meaning |
-|---|---|---|
-| `WALL_P` | 2.825 m | end-wall inner face, measured from the start pose |
-| `WALL_SIDE` | 0.475 m | side-wall inner face, measured from the lane centre |
-| `FINISH_P` | 2.600 m | dead-reckoned axle progress on the cyan line |
-| `PLAN_CLEAR` | 0.125 m | guaranteed free radius used by the planner |
-| `PLAN_DP` | 0.020 m | planner grid resolution |
-| `CHECK_DIST` | 0.060 m | forward TOF distance at which to stop before a box |
-| `TOF_STUCK_T` | 1.5 s | flat TOF while driving forward -> reverse |
-| `CROSS_MIN` | 0.300 m | forward travel that clears a box |
-| `SIDE_STOP` | 0.015 m | sonar distance that stops forward motion |
-
-The progress/lateral estimate is **dead reckoned** from the commanded forward
-speed along the IMU heading, not from wheel-odometry `x/y`. In-place turns
-therefore cannot add a position offset. At START the controller also
-re-teleports the robot exactly onto the start line, so physics settling creep
-cannot bias the run.
-
-## Terminal output
-
-When the run completes the controller prints the total challenge time:
-
-```
-==============================================================
-  CHALLENGE COMPLETE in 29.90 seconds
-  reason: finish line crossed (safe stop before wall)
-==============================================================
-```
-
-When you press **Ctrl+C** to exit after the run, the controller prints the
-total time between START and the stop instant (the finish time if reached,
-otherwise the moment you interrupted):
-
-```
-==============================================================
-  TOTAL RUN TIME (start -> finish): 29.90 seconds
-==============================================================
-```
+---
 
 ## Quick start (one command)
 
@@ -226,36 +170,24 @@ otherwise the moment you interrupted):
 ~/ros2_ws/src/autonomous_bot_sim/run_sim.sh
 ```
 
-This builds the package, sources the workspace, launches Gazebo/RViz and
+This builds the package, sources the workspace, launches Gazebo/RViz, and
 publishes `/start_button` automatically once the simulation is ready.
-Extra launch arguments are passed through:
 
 ```bash
-~/ros2_ws/src/autonomous_bot_sim/run_sim.sh gui:=false rviz:=false seed:=123
-```
+# obstacle rounds
+~/ros2_ws/src/autonomous_bot_sim/run_sim.sh mode:=astar
+~/ros2_ws/src/autonomous_bot_sim/run_sim.sh mode:=scan
+~/ros2_ws/src/autonomous_bot_sim/run_sim.sh mode:=bug2
 
-A `botsim` alias is also available in new interactive shells:
+# open round
+~/ros2_ws/src/autonomous_bot_sim/run_sim.sh mode:=open
 
-```bash
-botsim
-```
-
-To keep pressing START manually, add `auto_start:=false`:
-
-```bash
+# headless / manual start
+~/ros2_ws/src/autonomous_bot_sim/run_sim.sh gui:=false rviz:=false
 ~/ros2_ws/src/autonomous_bot_sim/run_sim.sh auto_start:=false
 ```
 
-## Run
-
-```bash
-cd ~/ros2_ws
-colcon build --packages-select autonomous_bot_sim --symlink-install
-source install/setup.bash
-ros2 launch autonomous_bot_sim sim.launch.py          # add gui:=false for headless
-```
-
-In a second terminal press ENTER to release the start signal:
+To start manually, open a second terminal and press ENTER:
 
 ```bash
 source ~/ros2_ws/install/setup.bash
@@ -265,34 +197,101 @@ ros2 run autonomous_bot_sim start_button
 Useful launch options:
 
 ```bash
-ros2 launch autonomous_bot_sim sim.launch.py seed:=123      # repeatable layout
-ros2 launch autonomous_bot_sim sim.launch.py rviz:=false    # no RViz
-ros2 launch autonomous_bot_sim sim.launch.py gui:=false     # no Gazebo GUI
+ros2 launch autonomous_bot_sim sim.launch.py mode:=open
+ros2 launch autonomous_bot_sim sim.launch.py seed:=123
+ros2 launch autonomous_bot_sim sim.launch.py rviz:=false gui:=false
 ros2 launch autonomous_bot_sim sim.launch.py randomize:=false start_paused:=true
 ros2 launch autonomous_bot_sim sim.launch.py randomize:=false \
     manual_layout:=$PWD/config/manual_example.yaml
 ```
 
-## Colours
+## Pause and place obstacles yourself (obstacle round)
 
-* Obstacles: 4 red and 4 green boxes, shuffled on every launch. These colours
-  are **visual only**; navigation and the pass decision never read them.
-* Start line: yellow.
-* Finish line: **cyan** (`0 0.95 1`). The camera detects only this strip.
+```bash
+./run_sim.sh randomize:=false start_paused:=true auto_start:=false
+```
 
-The finish-strip image band and cyan threshold are at the top of
-`autonomous_bot_sim/autonomous_controller.py`.
+Then use **Insert -> Box** in Gazebo, or spawn a YAML layout:
 
-## Layout
+```bash
+./run_sim.sh randomize:=false \
+  manual_layout:=$PWD/config/manual_example.yaml
+```
 
-* `autonomous_bot_sim/arena_layout.py` - 8-box scatter, gap/BFS validation
+Boxes whose names start with `obstacle`, `unit_box` or `box` are published on
+`/obstacle_poses` automatically. A ready-to-edit example is in
+`config/manual_example.yaml`. Pause/resume from another terminal:
+
+```bash
+ros2 service call /pause_physics   std_srvs/srv/Empty
+ros2 service call /unpause_physics std_srvs/srv/Empty
+```
+
+## Terminal output
+
+When the run completes the controller prints the total challenge time:
+
+```
+==============================================================
+  CHALLENGE COMPLETE in 32.80 seconds
+  reason: finish line crossed (safe stop before wall)
+==============================================================
+```
+
+For the open round the reason is, for example:
+
+```
+  reason: open round complete: 3 laps (22.55 m)
+```
+
+The elapsed time always includes the 5 s start hold. If you press **Ctrl+C**
+early, the controller prints the elapsed time from START to the stop instant.
+
+## Key constants
+
+Obstacle-round (`autonomous_bot_sim/color_navigator.py`):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `WALL_P` | 2.825 m | end-wall inner face from the start pose |
+| `WALL_SIDE` | 0.475 m | side-wall inner face from the lane centre |
+| `FINISH_P` | 2.525 m | dead-reckoned finish target (`finish_y = 1.175`) |
+| `PLAN_CLEAR` | 0.125 m | guaranteed free radius used by the planner |
+| `DECIDE_DIST` | 0.160 m | stop this far before a block |
+| `T_FINAL` | 30.0 s | FINAL approach timeout |
+
+Open-round:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `OPEN_LAPS` | 3 | complete laps |
+| `OPEN_SIDE_LEN` | 2.0 m | centreline side length |
+| `OPEN_LAP_LEN` | 8.0 m | centreline distance per lap |
+| `OPEN_TOTAL` | 24.0 m | fallback distance for 3 laps |
+| `OPEN_SIDE_TARGET` | 0.425 m | sonar reading on the track centreline |
+| `OPEN_CORNER_FRONT` | 0.48 m | front TOF range that triggers a corner turn |
+| `OPEN_V` | 0.130 m/s | open-round cruise speed |
+
+Simulated ray sensors (`urdf/robot.urdf.xacro`):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `ray_max` | 5.5 m | ray length, longer than either world diagonal (avoids `FLT_MAX`) |
+
+## Directory layout
+
+* `autonomous_bot_sim/arena_layout.py` - obstacle scatter, gap/BFS validation
 * `autonomous_bot_sim/obstacle_randomizer.py` - spawns the blocks and
   publishes `/obstacle_poses`
+* `autonomous_bot_sim/open_start_randomizer.py` - random open-round start,
+  direction and start/finish marker
 * `autonomous_bot_sim/manual_obstacles.py` - manual mode: spawns a YAML
   layout and mirrors hand-placed boxes onto `/obstacle_poses`
-* `config/manual_example.yaml` - example manual layout
-* `autonomous_bot_sim/color_navigator.py` - scan + A* planner + geometry-only
-  pass/state machine
-* `autonomous_bot_sim/autonomous_controller.py` - ROS wrapper, vision, timer
+* `autonomous_bot_sim/color_navigator.py` - all four modes (`astar`, `scan`,
+  `bug2`, `open`) in one state machine
+* `autonomous_bot_sim/autonomous_controller.py` - ROS wrapper, vision, timer,
+  start teleport, dead reckoning
+* `config/manual_example.yaml` - example manual obstacle layout
 * `urdf/robot.urdf.xacro` - angled camera, servo/TOF, left/right sonars
-* `worlds/arena.world` - arena, start line, cyan finish line
+* `worlds/obstacle_round.world` - 1 x 3 m obstacle round
+* `worlds/open_round.world` - 3 x 3 m open round

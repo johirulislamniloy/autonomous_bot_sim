@@ -20,7 +20,7 @@
        One TOF on a servo head built on the body top, front centre.
        The servo sweeps left/right, so obstacle angles are KNOWN, not guessed. -->
   <xacro:property name="servo_x"    value="0.10"/>   <!-- joint (beam pivot) x -->
-  <xacro:property name="servo_z"    value="0.09"/>   <!-- joint (beam pivot) z, beam height = 0.125 m abs -->
+  <xacro:property name="servo_z"    value="0.045"/>  <!-- joint (beam pivot) z, beam height = 0.080 m abs -->
   <xacro:property name="servo_max"  value="1.4"/>    <!-- joint limit, rad (we sweep +-1.05) -->
 
   <!-- ===== CAMERA (raised mast, angled down: sees obstacle colours in the
@@ -34,12 +34,19 @@
        One on each side of the body, beam pointing outwards with a 30 deg
        cone.  They keep the chassis from touching obstacles while the bot
        drives past them and while it sidesteps around a coloured obstacle. -->
-  <xacro:property name="sonar_x"   value="0.03"/>
+  <xacro:property name="sonar_x"   value="0.06"/>
   <xacro:property name="sonar_y"   value="0.075"/>
   <xacro:property name="sonar_z"   value="0.055"/>
-  <xacro:property name="sonar_half_cone" value="0.42"/>  <!-- rad: overlaps the
-       front TOF sweep, closing the near-side blind arc -->
-  <xacro:property name="sonar_max" value="1.20"/>
+  <xacro:property name="sonar_half_cone" value="0.30"/>  <!-- rad: ~30 deg full
+       cone, overlaps the front TOF sweep to close the near-side blind arc -->
+  <!-- Physical ray length.  It MUST exceed the largest distance across either
+       world (3x3 m ring diagonal ~4.24 m; 1x3 m arena diagonal ~3.16 m).
+       libgazebo_ros_ray_sensor reports FLT_MAX when a ray hits nothing, and
+       rclpy/Humble cannot deserialise a Range whose range is FLT_MAX.  With a
+       length longer than the enclosed world every horizontal ray hits a wall,
+       so a valid finite distance is always returned.  Values beyond the
+       navigator's effective SONAR_MAX are clamped in the controller. -->
+  <xacro:property name="ray_max" value="5.50"/>
 
   <!-- ===== 0. FOOTPRINT (ground) ===== -->
   <link name="base_footprint"/>
@@ -176,7 +183,7 @@
         </scan>
         <range>
           <min>0.02</min>
-          <max>3.0</max>
+          <max>${ray_max}</max>
           <resolution>0.01</resolution>
         </range>
         <noise>
@@ -317,7 +324,7 @@
           </scan>
           <range>
             <min>0.02</min>
-            <max>${sonar_max}</max>
+            <max>${ray_max}</max>
             <resolution>0.01</resolution>
           </range>
           <noise>

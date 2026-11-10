@@ -20,14 +20,20 @@ Pick the algorithm with the `mode` launch/ROS parameter (or nav.set_mode()):
               TURN_SIDE / SIDE_MOVE   diagonal detour past the box
               TURN_BACK / CROSS       turn back to the finish heading and go a
                                       bit forward (body straight), then SCAN
-              REVERSE   motor commanded but TOF range frozen ~1.5 s (or side
-                        sonar pressed on something) -> back up, STRAIGHTEN, SCAN
+              ESCAPE    no progress (front TOF flat, side sonar scraping, or
+                        IMU yaw flat during a turn) -> reverse while probing
+                        for room, STRAIGHTEN, then resume the cycle
 
     bug2    Classic Bug2 with only a straight TOF + 2 side sonars: drive along
             the M-line (lateral 0), on a hit turn away, wall-follow with the side
             sonar, leave when back on the M-line and closer to the goal.
 
-Shared by all modes: FINAL (cyan strip seen / finish zone -> straight dash).
+    open    Competition open round: follow the outer wall of the 1 m wide
+            square ring, turn 90 deg at each corner on the IMU, and stop after
+            3 complete laps (24 m).  The driving direction (clockwise or
+            counter-clockwise) is assigned randomly at the event.
+
+Shared by all obstacle modes: FINAL (cyan strip seen / finish zone -> dash).
 
 Angles are relative to the start heading: 0 = toward the finish, + = left.
 Box colour is never used.
@@ -39,11 +45,13 @@ import math
 from autonomous_bot_sim.arena_layout import OBS_SIZE, PLAN_RADIUS, ARENA_HALF_W
 
 INF = 9.9
-MODES = ('astar', 'scan', 'bug2')
+MODES = ('astar', 'scan', 'bug2', 'open')
 _ALIASES = {'a*': 'astar', 'a_star': 'astar', 'a-star': 'astar',
             'planner': 'astar', 'map': 'astar',
             'hybrid': 'scan', 'scan_and_go': 'scan', 'scan-and-go': 'scan',
-            'scango': 'scan', 'bug': 'bug2', 'bug_2': 'bug2'}
+            'scango': 'scan', 'bug': 'bug2', 'bug_2': 'bug2',
+            'open_round': 'open', 'open-round': 'open', 'ring': 'open',
+            'square': 'open', 'openround': 'open'}
 
 
 def wrap(a):
@@ -61,8 +69,8 @@ class ColorCourseNavigator:
     WALL_STOP     = 0.075       # raw TOF distance at which the wall guard stops
     BEAM_X        = 0.100       # TOF pivot ahead of the axle
     SONAR_Y       = 0.075       # side sonar offset from the centre line
-    FINISH_P      = 2.600       # axle progress on the cyan strip
-    LINE_MIN_P    = 2.250       # closest sensible start of the finish zone
+    FINISH_P      = 2.525       # axle progress on the cyan strip
+    LINE_MIN_P    = 2.175       # closest sensible start of the finish zone
 
     # ---------------------------------------------------------------- scan
     SWEEP_AMP     = 1.05
@@ -115,7 +123,6 @@ class ColorCourseNavigator:
     SIDE_STOP     = 0.015
     SIDE_HARD     = 0.100
     SIDE_REVERSE  = 0.035       # box scraping the body
-    SCRAPE_T      = 1.0         # pressed on something this long -> REVERSE
     PASS_CLEAR_MIN = 0.170
     SIDE_CLEAR_BOX = 0.180
     PASS_LAT_MAX  = 0.260
@@ -163,11 +170,51 @@ class ColorCourseNavigator:
     BUG_WIGGLE    = 0.45        # servo dither (rad) while driving in bug2 mode
     BUG_WIGGLE_T  = 0.8         # dither period (s): the TOF must cover the body width
 
+    # ------------------------------------------------------- open round ring
+    # 3 x 3 m outer square, 1 x 1 m inner block -> 1 m wide track.  The robot
+    # follows the 2 x 2 m centreline: 8 m per lap, 24 m for three laps.
+    OPEN_LAPS        = 3
+    OPEN_SIDE_LEN    = 2.0
+    OPEN_LAP_LEN     = 8.0
+    OPEN_TOTAL       = OPEN_LAPS * OPEN_LAP_LEN
+    OPEN_V           = 0.130
+    OPEN_SIDE_TARGET = 0.425  # sonar reading to either wall on the centreline
+    OPEN_K_OUTER     = 3.0
+    OPEN_INNER_SAFE  = 0.255  # closer than this to the inner block -> steer out
+    OPEN_K_INNER     = 3.2
+    OPEN_CORNER_FRONT = 0.48  # TOF range from the corner wall -> 90 deg turn
+    OPEN_CORNER_TIMEOUT = 5.0
+    OPEN_STALL_T     = 1.5
+    OPEN_STALL_EPS   = 0.010
+    OPEN_STALL_R     = 0.30
+
     # ---------------------------------------------------------- recovery
-    # Stuck: motor commanded forward but the TOF range does not change.
+    # Stuck: motor commanded forward but the robot makes no progress.  With no
+    # wheel encoders this is detected purely from the sensors:
+    #   * front TOF range flat while driving forward,
+    #   * side sonar pinned very close and flat while driving forward,
+    #   * IMU yaw flat while a turn is commanded.
     TOF_STUCK_T   = 1.5
     TOF_STUCK_EPS = 0.015
-    TOF_WATCH_R   = 1.50        # only watch returns closer than this
+    TOF_WATCH_R   = 0.14        # only a close, unchanging return means stalled;
+                                # a box at arm's length can keep a constant
+                                # range while the robot manoeuvres near it
+    # Bug2's straight M-line drive has almost no yaw, so a flat *raw* front
+    # return (walls included) is a reliable no-progress signal there.  Other
+    # states arc around boxes and can hold a constant raw range while moving.
+    GO_RAW_STUCK_T = 1.5
+    GO_RAW_WATCH_R = 1.50
+    SIDE_STUCK_T  = 1.5
+    SIDE_STUCK_EPS = 0.010
+    SIDE_STUCK_R  = 0.030       # "pressed against something" range
+    TURN_STUCK_T  = 1.0
+    TURN_STUCK_EPS = math.radians(6)
+    # Escape manoeuvre: reverse while probing for room, then straighten.
+    ESCAPE_T      = 1.4         # nominal reverse time
+    ESCAPE_MAX_T  = 2.4         # hard stop even if still blocked
+    ESCAPE_MIN_T  = 0.50        # never leave before this
+    ESCAPE_FRONT_CLEAR = 0.28   # front TOF distance that counts as room
+    ESCAPE_SIDE_CLEAR  = 0.10   # both side sonars must be clearer than this
     T_REVERSE     = 0.75        # grows 50 % per consecutive reverse (max x2.5)
     V_REVERSE     = 0.060
     T_STRAIGHTEN  = 2.0
@@ -176,13 +223,27 @@ class ColorCourseNavigator:
     T_APPROACH    = 12.0
     T_TURN        = 4.0
     T_SIDE        = 6.0
-    T_FINAL       = 15.0
+    T_FINAL       = 30.0        # a reactive mode can enter FINAL early and
+                                # off-centre; allow time to straighten, ease
+                                # back to the middle and creep to the strip
 
     DEBUG         = True
 
-    def __init__(self, mode='astar'):
+    def __init__(self, mode='astar', obs_size=None, finish_y=None,
+                 open_clockwise=False):
         self.obstacles = []
         self.mode = mode if mode in MODES else 'astar'
+        self.open_clockwise = bool(open_clockwise)
+        # Obstacle-round finish target: the launch preset passes the
+        # competition finish_y; None keeps the built-in value.
+        self.obs_half = (OBS_SIZE if obs_size is None
+                         else float(obs_size)) / 2.0
+        if finish_y is None:
+            self.finish_p = self.FINISH_P
+            self.line_min_p = self.LINE_MIN_P
+        else:
+            self.finish_p = float(finish_y) + 1.35
+            self.line_min_p = self.finish_p - (self.FINISH_P - self.LINE_MIN_P)
         self.reset(0.0, 0.0, 0.0)
 
     # ------------------------------------------------------------ mode switch
@@ -212,6 +273,19 @@ class ColorCourseNavigator:
     @property
     def planner_enabled(self):
         return self.mode == 'astar'
+
+    def set_open_clockwise(self, clockwise):
+        """Direction for the open round: True = clockwise, False = CCW.
+
+        Safe to call before or during a run.  The controller takes it from
+        /open_clockwise in simulation, or from the ``open_clockwise`` ROS
+        parameter on the real robot.
+        """
+        self.open_clockwise = bool(clockwise)
+        if self.mode == 'open':
+            print('[nav] open round direction: %s'
+                  % ('clockwise' if self.open_clockwise
+                     else 'counter-clockwise'), flush=True)
 
     # ------------------------------------------------------------------ init
     def reset(self, x0, y0, yaw0):
@@ -256,7 +330,14 @@ class ColorCourseNavigator:
         # recovery
         self.tof_anchor = None
         self.tof_anchor_t = 0.0
-        self.scrape_t = None
+        self.raw_tof_anchor = None
+        self.raw_tof_anchor_t = 0.0
+        self.side_anchor = None
+        self.side_anchor_t = 0.0
+        self.rel_anchor = None
+        self.rel_anchor_t = 0.0
+        self.last_v_cmd = 0.0
+        self.last_w_cmd = 0.0
         self.reverse_count = 0
         self.front_d = INF
         self.raw_d = INF
@@ -264,6 +345,18 @@ class ColorCourseNavigator:
         self.lat_entry = 0.0
         self.ok_since = None
         self._dbg = -1
+
+        # open round
+        self.open_heading = 0.0     # target tangent, relative to start heading
+        self.open_dist = 0.0        # dead-reckoned centreline distance
+        self.open_corners = 0
+        self.open_first_leg = None  # distance from start to the first corner
+        self.open_finish_from = None
+        self.open_finish_remaining = None
+        self.open_prev_x = x0
+        self.open_prev_y = y0
+        self.open_stall_anchor = None
+        self.open_stall_t = 0.0
 
     # ---------------------------------------------------------- pose helpers
     def progress(self, x, y):
@@ -288,8 +381,8 @@ class ColorCourseNavigator:
     def _clearance(self, p, l):
         best = INF
         for op, ol in self.obstacles:
-            dp = max(0.0, abs(p - op) - self.OBS_HALF)
-            dl = max(0.0, abs(l - ol) - self.OBS_HALF)
+            dp = max(0.0, abs(p - op) - self.obs_half)
+            dl = max(0.0, abs(l - ol) - self.obs_half)
             d = math.hypot(dp, dl)
             if d < best:
                 best = d
@@ -657,25 +750,105 @@ class ColorCourseNavigator:
             return False
         return (t - self.tof_anchor_t) >= self.TOF_STUCK_T
 
-    def _scraping(self, t, sl, sr):
-        """Side sonar pressed on something for SCRAPE_T seconds."""
-        if min(sl, sr) < self.SIDE_STOP:
-            if self.scrape_t is None:
-                self.scrape_t = t
-            return (t - self.scrape_t) >= self.SCRAPE_T
-        self.scrape_t = None
-        return False
+    def _raw_tof_stuck(self, t):
+        """Legacy raw-front stall check, used only in Bug2's GO state."""
+        dist = self.raw_d
+        if (self.mode != 'bug2' or self.state != 'GO'
+                or not math.isfinite(dist) or dist > self.GO_RAW_WATCH_R):
+            self.raw_tof_anchor = None
+            return False
+        if self.raw_tof_anchor is None:
+            self.raw_tof_anchor = dist
+            self.raw_tof_anchor_t = t
+            return False
+        if abs(dist - self.raw_tof_anchor) > self.TOF_STUCK_EPS:
+            self.raw_tof_anchor = dist
+            self.raw_tof_anchor_t = t
+            return False
+        return (t - self.raw_tof_anchor_t) >= self.GO_RAW_STUCK_T
 
-    def _wedged(self, t, v, sl, sr):
-        stuck = self._tof_stuck(t, self.raw_d, v > 0.02)
-        scrape = self._scraping(t, sl, sr)
-        if stuck or scrape:
-            print('[nav] wedge detected (%s) in %s -> reverse'
-                  % ('TOF flat %.1f s' % self.TOF_STUCK_T if stuck
-                     else 'side sonar pressed', self.state), flush=True)
-            self._enter('REVERSE', t)
-            return True
-        return False
+    def _side_stuck(self, t, sl, sr):
+        """Side sonar pinned very close and flat while driving forward.
+
+        A box beside the body is not enough on its own (driving parallel to a
+        wall keeps a constant sonar range).  Only a *very* close, unchanging
+        reading counts, which means the chassis is actually scraping.
+        """
+        m = min(sl, sr)
+        if not math.isfinite(m) or m > self.SIDE_STUCK_R:
+            self.side_anchor = None
+            return False
+        if self.side_anchor is None:
+            self.side_anchor = m
+            self.side_anchor_t = t
+            return False
+        if abs(m - self.side_anchor) > self.SIDE_STUCK_EPS:
+            self.side_anchor = m
+            self.side_anchor_t = t
+            return False
+        return (t - self.side_anchor_t) >= self.SIDE_STUCK_T
+
+    def _turn_stuck(self, t):
+        """IMU yaw flat while a turn is commanded (wheels not turning)."""
+        if self.rel_anchor is None:
+            self.rel_anchor = self.rel
+            self.rel_anchor_t = t
+            return False
+        if abs(wrap(self.rel - self.rel_anchor)) > self.TURN_STUCK_EPS:
+            self.rel_anchor = self.rel
+            self.rel_anchor_t = t
+            return False
+        return (t - self.rel_anchor_t) >= self.TURN_STUCK_T
+
+    def _reset_stuck(self):
+        self.tof_anchor = None
+        self.raw_tof_anchor = None
+        self.side_anchor = None
+        self.rel_anchor = None
+
+    def _check_stuck(self, t, sl, sr):
+        """Sensor-only progress check run once per control tick.
+
+        Called for every state except FINAL / REVERSE / ESCAPE / STRAIGHTEN.
+        Uses the command issued on the previous tick, so it works in any mode
+        and does not depend on wheel encoders.
+        """
+        v, w = self.last_v_cmd, self.last_w_cmd
+        fwd = v > 0.02
+        turning = abs(w) > 0.35 and not fwd
+        reason = None
+        if turning:
+            if self._turn_stuck(t):
+                reason = 'IMU yaw flat %.1f s' % self.TURN_STUCK_T
+            else:
+                self.tof_anchor = None
+                self.raw_tof_anchor = None
+                self.side_anchor = None
+        elif fwd:
+            # Watch only the body-width corridor: a box being passed beside the
+            # chassis keeps a nearly constant side range and must not look like
+            # a forward stall.  `_path_obstacle` also drops wall returns.
+            po = self._path_obstacle(t, half_width=0.130, max_r=1.20)
+            dist = po[2] if po is not None else INF
+            if self._raw_tof_stuck(t):
+                reason = ('GO raw TOF flat %.1f s @ %.2f m'
+                          % (self.GO_RAW_STUCK_T, self.raw_d))
+            elif abs(w) < 0.45 and self._tof_stuck(t, dist, True):
+                reason = ('front TOF flat %.1f s @ %.2f m'
+                          % (self.TOF_STUCK_T, dist))
+            elif self._side_stuck(t, sl, sr):
+                reason = ('side sonar pressed flat %.1f s @ %.2f m'
+                          % (self.SIDE_STUCK_T, min(sl, sr)))
+            else:
+                self.rel_anchor = None
+        else:
+            self._reset_stuck()
+        if reason is None:
+            return False
+        print('[nav] stuck in %s (%s) -> escape' % (self.state, reason),
+              flush=True)
+        self._enter('ESCAPE', t)
+        return True
 
     # --------------------------------------------------------------- turning
     def _turn_to(self, target, t):
@@ -833,6 +1006,14 @@ class ColorCourseNavigator:
         prog = self.progress(x, y)
         lat = self.lateral(x, y)
 
+        # Open round: count travel along the ring.  x/y are dead reckoned from
+        # the commanded forward speed, so in-place corner turns add nothing.
+        if self.mode == 'open':
+            ds = math.hypot(x - self.open_prev_x, y - self.open_prev_y)
+            self.open_prev_x, self.open_prev_y = x, y
+            if s == 'O_FOLLOW':
+                self.open_dist += ds
+
         if self.DEBUG and int(t * 2) != self._dbg:
             self._dbg = int(t * 2)
             print('[nav] %-9s %-10s p=%.2f lat=%+.2f rel=%+5.1fdeg fin=%d '
@@ -841,17 +1022,29 @@ class ColorCourseNavigator:
                      sonar_left, sonar_right, math.degrees(self.target_abs)),
                   flush=True)
 
-        if s != 'FINAL':
-            if self.finish_seen or prog >= self.LINE_MIN_P:
+        if self.mode != 'open' and s != 'FINAL':
+            if self.finish_seen or prog >= self.line_min_p:
                 print('[nav] finish zone -> FINAL', flush=True)
                 self._enter('FINAL', t)
                 s = 'FINAL'
                 elapsed = 0.0
 
+        # Sensor-only stall check: catches a box/wall the state handlers did
+        # not anticipate.  REVERSE / ESCAPE / STRAIGHTEN already move the
+        # robot out of trouble, so they are excluded.  The open round uses its
+        # own wall geometry check below.
+        if self.mode != 'open' and s not in ('FINAL', 'REVERSE', 'ESCAPE',
+                                             'STRAIGHTEN'):
+            if self._check_stuck(t, sonar_left, sonar_right):
+                s = self.state
+                elapsed = 0.0
+
         handler = getattr(self, '_s_' + s.lower(), None)
         if handler is None:
             return 0.0, 0.0
-        return handler(t, elapsed, prog, lat, sonar_left, sonar_right)
+        v, w = handler(t, elapsed, prog, lat, sonar_left, sonar_right)
+        self.last_v_cmd, self.last_w_cmd = v, w
+        return v, w
 
     # ---------------------------------------------------------------- helpers
     def _enter(self, state, t):
@@ -861,7 +1054,9 @@ class ColorCourseNavigator:
         self.sx, self.sy = self.x, self.y
         self.lat_entry = self.lateral(self.x, self.y)
         self.tof_anchor = None
-        self.scrape_t = None
+        self.raw_tof_anchor = None
+        self.side_anchor = None
+        self.rel_anchor = None
         if state == 'SCAN':
             self.scan_t0 = t
             self.scan_active = True
@@ -872,7 +1067,9 @@ class ColorCourseNavigator:
 
     def _enter_cycle(self, t):
         """Start (or restart) the main loop of the selected algorithm."""
-        if self.mode == 'bug2':
+        if self.mode == 'open':
+            self._enter('O_FOLLOW', t)
+        elif self.mode == 'bug2':
             self._enter('GO', t)
         elif self.mode == 'astar' and self.obstacles:
             self._enter('PLAN', t)
@@ -925,8 +1122,6 @@ class ColorCourseNavigator:
             v = 0.0
         elif side_min < 0.060:
             v *= 0.65
-        if self._wedged(t, v, sl, sr):
-            return 0.0, 0.0
         return v, w
 
     # ================================================= scan-and-go states
@@ -1043,9 +1238,33 @@ class ColorCourseNavigator:
         elif side_min < 0.120:
             v *= 0.65
 
-        if self._wedged(t, v, sl, sr):
-            return 0.0, 0.0
         return v, w
+
+    def _s_escape(self, t, el, prog, lat, sl, sr):
+        """Reverse away from a stall while probing for free space.
+
+        A side sonar pinched below SIDE_STOP aborts immediately (reversing
+        further would drag the body along the obstacle).  Otherwise back up
+        until the front TOF and both side sonars show room, with a nominal
+        1.4 s and a 2.4 s hard limit.
+        """
+        if min(sl, sr) < self.SIDE_STOP:
+            print('[nav] escape abort: side pinched -> straighten and re-scan',
+                  flush=True)
+            self._enter('STRAIGHTEN', t)
+            return 0.0, 0.0
+        fr = self._front(t, 0.35)
+        front = fr[2] if fr is not None else INF
+        front_clear = front > self.ESCAPE_FRONT_CLEAR
+        side_clear = min(sl, sr) > self.ESCAPE_SIDE_CLEAR
+        if ((el >= self.ESCAPE_MIN_T and front_clear and side_clear)
+                or (el >= self.ESCAPE_T and front_clear)
+                or el >= self.ESCAPE_MAX_T):
+            print('[nav] escape done (front=%.2f L=%.2f R=%.2f) -> re-scan'
+                  % (front, sl, sr), flush=True)
+            self._enter('STRAIGHTEN', t)
+            return 0.0, 0.0
+        return -self.V_REVERSE, 0.0
 
     def _s_reverse(self, t, el, prog, lat, sl, sr):
         dur = self.T_REVERSE * (1.0 + 0.5 * min(self.reverse_count - 1, 3))
@@ -1232,8 +1451,6 @@ class ColorCourseNavigator:
             v = 0.0
         elif side_min < 0.070:
             v *= 0.60
-        if self._wedged(t, v, sl, sr):
-            return 0.0, 0.0
         return v, self._wall_hard(clamp(w, -self.W_MAX, self.W_MAX), lat)
 
     def _s_turn_back(self, t, el, prog, lat, sl, sr):
@@ -1262,8 +1479,6 @@ class ColorCourseNavigator:
         w = self._side_guard(w, sl, sr)
         w = self._wall_guard(w, lat)
         w = self._wall_hard(w, lat)
-        if self._wedged(t, v, sl, sr):
-            return 0.0, 0.0
         return v, w
 
     # ============================================================ Bug2 states
@@ -1281,8 +1496,6 @@ class ColorCourseNavigator:
         w = self._wall_hard(self._wall_guard(w, lat), lat)
         if fc < 0.40:
             v *= max(0.30, (fc - 0.06) / 0.34)
-        if self._wedged(t, v, sl, sr):
-            return 0.0, 0.0
         return v, w
 
     def _bug_hit(self, fc, prog, lat, sl, sr, t):
@@ -1360,8 +1573,6 @@ class ColorCourseNavigator:
             w = clamp(self.obs_side * self.K_WALL * (ds - self.D_FOLLOW),
                       -self.W_MAX, self.W_MAX)
             v = self.V_FOLLOW * (1.0 - 0.5 * min(1.0, abs(w) / self.W_MAX))
-        if self._wedged(t, v, sl, sr):
-            return 0.0, 0.0
         return v, w
 
     def _s_b_uturn(self, t, el, prog, lat, sl, sr):
@@ -1381,6 +1592,111 @@ class ColorCourseNavigator:
             return 0.0, 0.0
         return 0.0, w
 
+    # ===================================================== OPEN ROUND states
+    def _open_turn_sign(self):
+        """+1 = left turns (counter-clockwise), -1 = right turns (clockwise)."""
+        return -1.0 if self.open_clockwise else 1.0
+
+    def _s_o_follow(self, t, el, prog, lat, sl, sr):
+        turn_sign = self._open_turn_sign()
+        out_side = -turn_sign
+        inner_side = turn_sign
+        inner_d = sl if inner_side > 0 else sr
+        outer_d = sr if out_side < 0 else sl
+
+        # 3 complete laps, stopped on the starting side.  After the 12th
+        # corner the robot is back on the starting side; drive the same
+        # distance that separated the start point from the first corner and
+        # stop on the original line.
+        if self.open_finish_from is not None:
+            if (self.open_dist - self.open_finish_from
+                    >= self.open_finish_remaining):
+                self.finished = True
+                self.finish_reason = (
+                    'open round complete: %d laps (%.1f m)'
+                    % (self.OPEN_LAPS, self.open_dist))
+                print('[nav] OPEN ROUND COMPLETE: %.2f m, %d corners'
+                      % (self.open_dist, self.open_corners), flush=True)
+                return 0.0, 0.0
+        elif self.open_dist >= self.OPEN_TOTAL:
+            # Fallback if a corner was never seen (start exactly on a corner).
+            self.finished = True
+            self.finish_reason = (
+                'open round complete: %d laps (%.1f m)'
+                % (self.OPEN_LAPS, self.open_dist))
+            return 0.0, 0.0
+
+        # Reaching the outer wall ahead means the current side ends: turn
+        # 90 deg toward the inner block and continue on the next side.
+        front = self.raw_d
+        if math.isfinite(front) and front < self.OPEN_CORNER_FRONT:
+            self.open_heading = wrap(
+                self.open_heading + turn_sign * math.pi / 2.0)
+            print('[nav] open: corner %d -> turn %s (front %.2f m)'
+                  % (self.open_corners + 1,
+                     'left' if turn_sign > 0 else 'right', front),
+                  flush=True)
+            self._enter('O_CORNER', t)
+            return 0.0, 0.0
+
+        # Stall guard: a wall much closer than the corner trigger while the
+        # commanded speed produces no change means something is blocking the
+        # chassis.  Back off briefly and resume.
+        if math.isfinite(front) and front < self.OPEN_STALL_R:
+            if self.open_stall_anchor is None:
+                self.open_stall_anchor = front
+                self.open_stall_t = t
+            elif abs(front - self.open_stall_anchor) > self.OPEN_STALL_EPS:
+                self.open_stall_anchor = front
+                self.open_stall_t = t
+            elif t - self.open_stall_t >= self.OPEN_STALL_T:
+                print('[nav] open: stall guard (front %.2f m) -> reverse'
+                      % front, flush=True)
+                self.open_stall_anchor = None
+                self._enter('O_REVERSE', t)
+                return 0.0, 0.0
+        else:
+            self.open_stall_anchor = None
+
+        # Heading hold along the current side, then centre in the 1 m track
+        # with the outer-wall sonar; the inner block only needs a guard.
+        v, w = self._drive_heading(self.open_heading, self.OPEN_V)
+        if math.isfinite(outer_d) and outer_d < 0.90:
+            w += out_side * self.OPEN_K_OUTER * (outer_d - self.OPEN_SIDE_TARGET)
+        if math.isfinite(inner_d) and inner_d < 0.40:
+            w += out_side * self.OPEN_K_INNER * (self.OPEN_INNER_SAFE - inner_d)
+
+        return v, clamp(w, -self.W_MAX, self.W_MAX)
+
+    def _s_o_corner(self, t, el, prog, lat, sl, sr):
+        w, done = self._turn_to(self.open_heading, t)
+        if done or el > self.OPEN_CORNER_TIMEOUT:
+            self.open_corners += 1
+            if self.open_corners == 1:
+                self.open_first_leg = self.open_dist
+            if self.open_corners % 4 == 0:
+                print('[nav] open: lap %d/%d complete (%.2f m)'
+                      % (self.open_corners // 4, self.OPEN_LAPS,
+                         self.open_dist), flush=True)
+            if self.open_corners == 4 * self.OPEN_LAPS:
+                first = (self.open_first_leg
+                         if self.open_first_leg is not None
+                         else self.OPEN_SIDE_LEN / 2.0)
+                self.open_finish_from = self.open_dist
+                self.open_finish_remaining = max(
+                    0.0, self.OPEN_SIDE_LEN - first)
+                print('[nav] open: 3 laps done, %.2f m to the start line'
+                      % self.open_finish_remaining, flush=True)
+            self._enter('O_FOLLOW', t)
+            return 0.0, 0.0
+        return 0.0, w
+
+    def _s_o_reverse(self, t, el, prog, lat, sl, sr):
+        if el >= 0.70:
+            self._enter('O_FOLLOW', t)
+            return 0.0, 0.0
+        return -self.V_REVERSE, 0.0
+
     # ============================================================ FINAL (all)
     def _s_final(self, t, el, prog, lat, sl, sr):
         # Creep in while easing back toward the lane centre: the reactive
@@ -1393,7 +1709,7 @@ class ColorCourseNavigator:
             w, _ = self._turn_to(target, t)
             return 0.0, w
 
-        if prog >= self.FINISH_P:
+        if prog >= self.finish_p:
             self.finished = True
             self.finish_reason = ('finish line colour detected'
                                   if self.finish_seen else 'reached finish line')

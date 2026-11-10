@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# Build and launch the simulation, then press START automatically.
+# Build and launch the competition simulation, then press START automatically.
 #
-#   ./run_sim.sh                 # GUI + RViz + auto start (seed random)
+#   ./run_sim.sh                 # obstacle round + GUI + RViz + auto start
+#   ./run_sim.sh mode:=open      # open round (3x3 m ring, random start)
 #   ./run_sim.sh gui:=false rviz:=false seed:=123
 #   ./run_sim.sh auto_start:=false   # start manually with the start_button
 #   ./run_sim.sh randomize:=false start_paused:=true auto_start:=false
 #                                # paused, place obstacles yourself
 #   ./run_sim.sh randomize:=false manual_layout:=$PWD/config/manual_example.yaml
-#   ./run_sim.sh mode:=astar     # map-aware A* (default)
-#   ./run_sim.sh mode:=scan      # reactive scan-and-go, no map needed
-#   ./run_sim.sh mode:=bug2      # reactive Bug2 obstacle following
+#   ./run_sim.sh mode:=astar     # obstacle round: map-aware A* (default)
+#   ./run_sim.sh mode:=scan      # obstacle round: reactive scan-and-go
+#   ./run_sim.sh mode:=bug2      # obstacle round: reactive Bug2
+#   ./run_sim.sh mode:=open open_clockwise:=true
+#                                # open round on real hardware (fixed direction)
 #
 # Any extra arguments are passed straight to `ros2 launch`.
 set -eo pipefail
