@@ -191,11 +191,17 @@ def generate_launch_description():
         # the robot on START, so a fixed delay after the launch is safe.
         auto_start = ExecuteProcess(
             cmd=['bash', '-c',
-                 'until ros2 topic list 2>/dev/null | grep -q /start_button; do '
-                 'sleep 0.5; done; '
+                 # --no-daemon: a stale ros2 daemon (common after a killed
+                 # run) must not wedge the auto-start topic probe.
+                 'until ros2 topic list --no-daemon 2>/dev/null '
+                 '| grep -q /start_button; do sleep 0.5; done; '
                  'sleep 8; '
+                 # Publish a few times: a single message can be lost while
+                 # DDS discovery or the odom/TOF warm-up is still in flight.
+                 'for i in 1 2 3 4 5; do '
                  'ros2 topic pub --once /start_button std_msgs/msg/Bool '
-                 '"{data: true}"'],
+                 '"{data: true}" >/dev/null 2>&1; '
+                 'sleep 0.5; done'],
             condition=IfCondition(LaunchConfiguration('auto_start')),
             output='screen'
         )

@@ -126,9 +126,18 @@ The open round lives in the same navigator file
 3. **90 deg corner turns** - when the front TOF sees the outer wall of the next
    side (`< 0.48 m`), the robot stops and turns 90 deg toward the inner block
    using the IMU. The turn direction follows the assigned lap direction.
-4. **Lap counting** - the navigator integrates the dead-reckoned centreline
-   distance. After the 12th corner it drives the same offset that separated the
-   start point from the first corner and stops on the original start line.
+4. **Start memorization (no line, no encoders)** - two independent references:
+   * **Primary (front TOF)** - the forward TOF range at the start is the
+     distance to the end wall of the starting side. After the 12th turn the
+     robot is on the same side, facing the same wall, so it stops when the
+     front TOF matches that remembered range (2.5 cm tolerance, 3 consecutive
+     samples). This is an absolute along-track position, independent of speed.
+   * **Fallback (clock)** - **A** = time from the start to the first corner
+     (the partial first leg) and **B** = average time of one full side over the
+     11 sides between corners 1 and 12 (turn duration excluded). If no TOF
+     reference was available, the robot drives **B - A** seconds; a guard also
+     stops it just past that estimate if the TOF never matches.
+   * Both need no start line and no wheel encoders.
 5. **Stall guard** - if the front wall stays flat much closer than the corner
    trigger, the robot backs off briefly and resumes.
 
@@ -140,7 +149,7 @@ The corner logic and lap counter need no wheel encoders and no world map.
 
 * picks one of the four sides, a random position away from the corners, and a
   random clockwise/counter-clockwise direction;
-* spawns a cyan start/finish line at that pose;
+* draws no start/finish line (the real round has none; `spawn_marker:=false`);
 * publishes the pose on `/open_start_pose` and the direction on
   `/open_clockwise` (both latched);
 * the controller teleports the robot to that pose on START and passes the

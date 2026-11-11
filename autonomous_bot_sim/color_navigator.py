@@ -187,6 +187,9 @@ class ColorCourseNavigator:
     OPEN_STALL_T     = 1.5
     OPEN_STALL_EPS   = 0.010
     OPEN_STALL_R     = 0.30
+    OPEN_STOP_TOL    = 0.025  # m, stop when the front TOF matches the start
+    OPEN_STOP_HITS   = 3      # consecutive matched samples (20 Hz loop)
+    OPEN_STOP_EXTRA_T = 0.30  # s, last-resort guard past the clock estimate
 
     # ---------------------------------------------------------- recovery
     # Stuck: motor commanded forward but the robot makes no progress.  With no
@@ -357,6 +360,27 @@ class ColorCourseNavigator:
         self.open_prev_y = y0
         self.open_stall_anchor = None
         self.open_stall_t = 0.0
+
+        # Open-round start memory, clock only (no encoders, no line):
+        #   A = time from the start to the first corner (partial side)
+        #   B = average time of one full side, measured over the 11 sides
+        #       between corners 1..12
+        # After the 12th corner the robot is on the starting side and drives
+        # for (B - A) seconds: (full side) - (partial first leg), i.e. exactly
+        # back to the remembered start point.
+        self.open_start_t = None
+        self.open_last_turn_done_t = None
+        self.open_corner_intervals = []
+        self.open_first_leg_t = None    # A
+        self.open_side_time = None      # B
+        self.open_final_leg_t = None    # B - A (clock fallback / guard)
+        self.open_final_leg_t0 = None   # when the final leg began
+        # Primary stop reference: the front TOF at the start point.  After
+        # three laps the robot is on the same side heading the same way, so
+        # the same end wall gives the same forward range: an absolute
+        # along-track position with no encoder or clock drift.
+        self.open_start_tof = None
+        self.open_tof_hits = 0
 
     # ---------------------------------------------------------- pose helpers
     def progress(self, x, y):
@@ -1013,6 +1037,10 @@ class ColorCourseNavigator:
             self.open_prev_x, self.open_prev_y = x, y
             if s == 'O_FOLLOW':
                 self.open_dist += ds
+                if self.open_start_t is None and self.open_corners == 0:
+                    # First O_FOLLOW step after the mandatory hold: this is
+                    # the instant the robot actually leaves the start point.
+                    self.open_start_t = t
 
         if self.DEBUG and int(t * 2) != self._dbg:
             self._dbg = int(t * 2)
@@ -1604,11 +1632,62 @@ class ColorCourseNavigator:
         inner_d = sl if inner_side > 0 else sr
         outer_d = sr if out_side < 0 else sl
 
-        # 3 complete laps, stopped on the starting side.  After the 12th
-        # corner the robot is back on the starting side; drive the same
-        # distance that separated the start point from the first corner and
-        # stop on the original line.
-        if self.open_finish_from is not None:
+        # Remember the forward TOF at the start point.  In the open round the
+        # servo is held straight, so this is the range to the end wall of the
+        # starting side.  After three laps the robot is on the same side
+        # heading the same way, and the same wall gives the same reading: an
+        # absolute along-track position, independent of speed and clock drift.
+        if (self.open_start_tof is None and self.open_corners == 0
+                and math.isfinite(self.raw_d)):
+            self.open_start_tof = self.raw_d
+            print('[nav] open: start TOF %.3f m' % self.open_start_tof,
+                  flush=True)
+
+        # 3 complete laps, stopped at the remembered start point.  Primary
+        # stop: the front TOF matches the start reading (same end wall).
+        # Clock memory (A/B) remains as a fallback if the TOF reference was
+        # never available, and as a last-resort guard.
+        if self.open_final_leg_t is not None:
+            stop = False
+            why = ''
+            if (self.open_start_tof is not None
+                    and math.isfinite(self.raw_d)):
+                if self.raw_d <= self.open_start_tof + self.OPEN_STOP_TOL:
+                    self.open_tof_hits += 1
+                else:
+                    self.open_tof_hits = 0
+                if self.open_tof_hits >= self.OPEN_STOP_HITS:
+                    stop = True
+                    why = ('TOF match %.3f m (start %.3f m)'
+                           % (self.raw_d, self.open_start_tof))
+            if not stop and self.open_final_leg_t0 is not None:
+                el_final = t - self.open_final_leg_t0
+                if self.open_start_tof is None:
+                    # No TOF reference at all: use the clock exactly.
+                    if el_final >= self.open_final_leg_t:
+                        stop = True
+                        why = ('clock fallback %.2f s'
+                               % self.open_final_leg_t)
+                elif el_final >= (self.open_final_leg_t
+                                  + self.OPEN_STOP_EXTRA_T):
+                    # TOF reference exists but never matched (sensor glitch):
+                    # stop just past the clock estimate instead of running on.
+                    stop = True
+                    why = ('clock guard %.2f s'
+                           % (self.open_final_leg_t + self.OPEN_STOP_EXTRA_T))
+            if stop:
+                self.finished = True
+                self.finish_reason = (
+                    'open round complete: %d laps at the start point (%s)'
+                    % (self.OPEN_LAPS, why))
+                print('[nav] OPEN ROUND COMPLETE: %d corners, %s, final leg '
+                      '%.2f s (A=%.2f s, B=%.2f s)'
+                      % (self.open_corners, why, self.open_final_leg_t,
+                         self.open_first_leg_t or 0.0,
+                         self.open_side_time or 0.0), flush=True)
+                return 0.0, 0.0
+        elif self.open_finish_from is not None:
+            # Distance fallback if the clock memory was unavailable.
             if (self.open_dist - self.open_finish_from
                     >= self.open_finish_remaining):
                 self.finished = True
@@ -1626,37 +1705,57 @@ class ColorCourseNavigator:
                 % (self.OPEN_LAPS, self.open_dist))
             return 0.0, 0.0
 
-        # Reaching the outer wall ahead means the current side ends: turn
-        # 90 deg toward the inner block and continue on the next side.
-        front = self.raw_d
-        if math.isfinite(front) and front < self.OPEN_CORNER_FRONT:
-            self.open_heading = wrap(
-                self.open_heading + turn_sign * math.pi / 2.0)
-            print('[nav] open: corner %d -> turn %s (front %.2f m)'
-                  % (self.open_corners + 1,
-                     'left' if turn_sign > 0 else 'right', front),
-                  flush=True)
-            self._enter('O_CORNER', t)
-            return 0.0, 0.0
-
-        # Stall guard: a wall much closer than the corner trigger while the
-        # commanded speed produces no change means something is blocking the
-        # chassis.  Back off briefly and resume.
-        if math.isfinite(front) and front < self.OPEN_STALL_R:
-            if self.open_stall_anchor is None:
-                self.open_stall_anchor = front
-                self.open_stall_t = t
-            elif abs(front - self.open_stall_anchor) > self.OPEN_STALL_EPS:
-                self.open_stall_anchor = front
-                self.open_stall_t = t
-            elif t - self.open_stall_t >= self.OPEN_STALL_T:
-                print('[nav] open: stall guard (front %.2f m) -> reverse'
-                      % front, flush=True)
-                self.open_stall_anchor = None
-                self._enter('O_REVERSE', t)
+        # The final leg never triggers another corner: after the 12th turn
+        # the robot is on the starting side and only has to reach the start
+        # point (TOF match / clock guard above).  This also covers a start
+        # that is closer to the end wall than OPEN_CORNER_FRONT.
+        if self.open_final_leg_t is None:
+            # Reaching the outer wall ahead means the current side ends: turn
+            # 90 deg toward the inner block and continue on the next side.
+            front = self.raw_d
+            if math.isfinite(front) and front < self.OPEN_CORNER_FRONT:
+                # Clock memory (no encoders, no line).  A is the partial
+                # first leg; each later interval is the pure drive time of
+                # one full side (previous turn completed -> this corner
+                # detected), so the turn duration itself is excluded from B.
+                n = self.open_corners + 1
+                if self.open_start_t is not None:
+                    if self.open_last_turn_done_t is None:
+                        self.open_first_leg_t = t - self.open_start_t
+                    else:
+                        self.open_corner_intervals.append(
+                            t - self.open_last_turn_done_t)
+                    if (n == 4 * self.OPEN_LAPS
+                            and self.open_corner_intervals):
+                        self.open_side_time = (
+                            sum(self.open_corner_intervals)
+                            / len(self.open_corner_intervals))
+                self.open_heading = wrap(
+                    self.open_heading + turn_sign * math.pi / 2.0)
+                print('[nav] open: corner %d -> turn %s (front %.2f m)'
+                      % (n, 'left' if turn_sign > 0 else 'right', front),
+                      flush=True)
+                self._enter('O_CORNER', t)
                 return 0.0, 0.0
-        else:
-            self.open_stall_anchor = None
+
+            # Stall guard: a wall much closer than the corner trigger while
+            # the commanded speed produces no change means something is
+            # blocking the chassis.  Back off briefly and resume.
+            if math.isfinite(front) and front < self.OPEN_STALL_R:
+                if self.open_stall_anchor is None:
+                    self.open_stall_anchor = front
+                    self.open_stall_t = t
+                elif abs(front - self.open_stall_anchor) > self.OPEN_STALL_EPS:
+                    self.open_stall_anchor = front
+                    self.open_stall_t = t
+                elif t - self.open_stall_t >= self.OPEN_STALL_T:
+                    print('[nav] open: stall guard (front %.2f m) -> reverse'
+                          % front, flush=True)
+                    self.open_stall_anchor = None
+                    self._enter('O_REVERSE', t)
+                    return 0.0, 0.0
+            else:
+                self.open_stall_anchor = None
 
         # Heading hold along the current side, then centre in the 1 m track
         # with the outer-wall sonar; the inner block only needs a guard.
@@ -1672,6 +1771,7 @@ class ColorCourseNavigator:
         w, done = self._turn_to(self.open_heading, t)
         if done or el > self.OPEN_CORNER_TIMEOUT:
             self.open_corners += 1
+            self.open_last_turn_done_t = t
             if self.open_corners == 1:
                 self.open_first_leg = self.open_dist
             if self.open_corners % 4 == 0:
@@ -1679,14 +1779,27 @@ class ColorCourseNavigator:
                       % (self.open_corners // 4, self.OPEN_LAPS,
                          self.open_dist), flush=True)
             if self.open_corners == 4 * self.OPEN_LAPS:
-                first = (self.open_first_leg
-                         if self.open_first_leg is not None
-                         else self.OPEN_SIDE_LEN / 2.0)
-                self.open_finish_from = self.open_dist
-                self.open_finish_remaining = max(
-                    0.0, self.OPEN_SIDE_LEN - first)
-                print('[nav] open: 3 laps done, %.2f m to the start line'
-                      % self.open_finish_remaining, flush=True)
+                if (self.open_side_time is not None
+                        and self.open_first_leg_t is not None):
+                    # Prefer the measured clock: drive one full side minus
+                    # the remembered partial first leg.
+                    self.open_final_leg_t = max(
+                        0.0, self.open_side_time - self.open_first_leg_t)
+                    self.open_final_leg_t0 = t
+                    print('[nav] open: 3 laps done, final leg %.2f s '
+                          '(A=%.2f s, B=%.2f s)'
+                          % (self.open_final_leg_t, self.open_first_leg_t,
+                             self.open_side_time), flush=True)
+                else:
+                    # Distance fallback if the first corner was never timed.
+                    first = (self.open_first_leg
+                             if self.open_first_leg is not None
+                             else self.OPEN_SIDE_LEN / 2.0)
+                    self.open_finish_from = self.open_dist
+                    self.open_finish_remaining = max(
+                        0.0, self.OPEN_SIDE_LEN - first)
+                    print('[nav] open: 3 laps done, %.2f m to the start line'
+                          % self.open_finish_remaining, flush=True)
             self._enter('O_FOLLOW', t)
             return 0.0, 0.0
         return 0.0, w

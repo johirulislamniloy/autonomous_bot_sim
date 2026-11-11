@@ -9,8 +9,11 @@ mirrors that behaviour in simulation:
   * picks one of the four 2 m centreline sides,
   * picks a random position along it (away from the corners),
   * picks clockwise or counter-clockwise,
-  * spawns a start/finish line at that pose,
   * publishes the pose and direction (latched) for the controller.
+
+The real open round has no start/finish line, so no marker is drawn by
+default (``spawn_marker:=false``).  The navigator does not use the marker:
+it stops from remembered corner timing.
 
 On the real robot this node is not needed: launch the controller with
 ``open_clockwise:=true`` or ``open_clockwise:=false`` instead and place the
@@ -45,7 +48,10 @@ class OpenStartRandomizer(Node):
         self.declare_parameter('margin', 0.40)      # keep clear of the corners
         self.declare_parameter('track_half', TRACK_HALF)
         self.declare_parameter('line_width', 0.98)
-        self.declare_parameter('spawn_marker', True)
+        # The real open round has no start/finish line, so the marker is off
+        # by default.  The navigator never uses it in any case: it stops from
+        # remembered corner timing alone.
+        self.declare_parameter('spawn_marker', False)
 
         self.pose_pub = self.create_publisher(PoseStamped, '/open_start_pose',
                                               LATCH_QOS)
