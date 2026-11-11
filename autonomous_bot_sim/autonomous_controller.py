@@ -14,7 +14,7 @@ Outputs
 
 The camera is deliberately angled down (0.35 rad, see the URDF):
   * middle rows  -> red / green obstacle faces
-  * bottom rows  -> cyan finish strip on the floor
+  * bottom rows  -> red finish strip on the floor (wide horizontal run)
 
 The navigator does the actual course logic; this node only converts ROS
 messages to its simple sensor inputs and reports the total challenge time.
@@ -45,11 +45,19 @@ SERVO_JOINT = 'servo_joint'
 LOOP_PERIOD = 0.05            # 20 Hz
 SONAR_MAX = 1.20              # URDF sonar max range
 VISION_TIMEOUT = 0.50         # older camera data = finish not seen
-FINISH_PIX = 25               # cyan pixels in the bottom rows
+FINISH_SPAN_FRAC = 0.70       # red must span this much of the image width
+FINISH_RED_MIN = 100          # sampled red pixels needed in the floor band
+FINISH_HITS = 2               # consecutive line-like camera frames
+RED_ABOVE_MAX = 12            # red pixels tolerated in the upper image
 
-# Camera is tilted down 0.35 rad at 0.185 m height.
-#   finish band: rows 88% .. 100% (floor strip right in front)
-FIN_ROW_LO = 0.88
+# Camera is tilted down 0.35 rad at 0.185 m height (320 x 240, hfov 1.2).
+# Rows 75% .. 100% look at the floor 0.171 m to 0.269 m ahead: exactly where
+# the 4 cm strip passes before it slides under the robot.  Searching that
+# whole band keeps the strip in view for ~5 cm of travel (several 10 Hz
+# frames); a narrower band left it detectable for barely one frame.
+FIN_ROW_LO = 0.75
+# Anything above row 60% is the body of a box, never the flat floor strip.
+RED_TOP_HI = 0.60
 
 # Gazebo sensor/odom publishers use BEST_EFFORT. Subscribers must match.
 SENSOR_QOS = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -109,8 +117,10 @@ class AutonomousController(Node):
         self.create_subscription(Range, '/sonar_right', self.right_cb, SENSOR_QOS,
                                  callback_group=self.cb_group)
 
-        # --- camera: cyan finish strip only (box colour is never used) ---
+        # --- camera: red finish strip; box colour is never used ---
+        # finish_px is the strip's column span in the floor band (for logs).
         self.finish_px = 0
+        self.finish_hits = 0
         self.vision_t = -1.0
         self.create_subscription(Image, '/front_camera/image_raw',
                                  self.color_cb, IMAGE_QOS,
@@ -310,7 +320,19 @@ class AutonomousController(Node):
                           math.cos(self.yaw - self.nav.yaw0))
 
     def color_cb(self, msg):
-        """Detect the cyan finish strip (obstacle colours are ignored)."""
+        """Detect the red finish strip on the floor.
+
+        Red boxes are the same colour family, so colour alone is not enough.
+        The strip is 0.95 m wide and lies flat on the floor in front of the
+        robot: in the bottom floor band it crosses the whole image width,
+        while a 5 cm box at the avoidance distance spans only ~12% (and 36%
+        even at 10 cm).  We therefore require the red in the floor band to
+        span most of the image width, not just a long horizontal run: at an angle
+        each row crosses the 4 cm strip over only a short piece, but the
+        strip still spans every column.  Red in the upper image can only be
+        a box body (the flat strip never appears there) and rejects the
+        frame.
+        """
         if msg.encoding not in ('rgb8', 'bgr8'):
             return
         d = msg.data
@@ -318,19 +340,52 @@ class AutonomousController(Node):
         h, w, step = msg.height, msg.width, msg.step
 
         fin_lo = int(h * FIN_ROW_LO)
-        cyan = 0
-        for j in range(fin_lo, h, 2):
+        top_hi = int(h * RED_TOP_HI)
+        red_above = 0         # red in the upper image -> box body
+        for j in range(0, top_hi, 2):
+            # A box body fills this area quickly; stop counting once it can
+            # no longer be accepted so a nearby box costs almost nothing.
             base = j * step
             for i in range(0, w, 2):
                 p = base + 3 * i
                 r, g, b = d[p], d[p + 1], d[p + 2]
                 if swap:
                     r, b = b, r
-                if g > 55 and b > 55 and r < 0.70 * g and r < 0.70 * b \
-                        and abs(g - b) < 100:
-                    cyan += 1
+                if r > 70 and r > 1.45 * g and r > 1.45 * b:
+                    red_above += 1
+            if red_above > RED_ABOVE_MAX:
+                break
 
-        self.finish_px = cyan
+        band_px = 0           # red pixels in the floor band
+        col_lo, col_hi = w, -1
+        if red_above <= RED_ABOVE_MAX:
+            for j in range(fin_lo, h, 2):
+                base = j * step
+                for i in range(0, w, 2):
+                    p = base + 3 * i
+                    r, g, b = d[p], d[p + 1], d[p + 2]
+                    if swap:
+                        r, b = b, r
+                    if r > 70 and r > 1.45 * g and r > 1.45 * b:
+                        band_px += 1
+                        if i < col_lo:
+                            col_lo = i
+                        if i > col_hi:
+                            col_hi = i
+
+        span = (col_hi - col_lo) if col_hi >= 0 else 0
+        line = (span >= FINISH_SPAN_FRAC * w
+                and band_px >= FINISH_RED_MIN)
+        self.finish_px = span
+        if line:
+            if self.finish_hits == 0:
+                self.get_logger().info(
+                    'Red finish strip candidate: span=%d/%d px, band_px=%d, '
+                    'red_above=%d' % (span, w, band_px, red_above))
+            self.finish_hits = min(self.finish_hits + 1, 10)
+        else:
+            self.finish_hits = 0
+
         self.vision_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if self.vision_t <= 0.0:
             self.vision_t = self.get_clock().now().nanoseconds / 1e9
@@ -395,6 +450,8 @@ class AutonomousController(Node):
                 self.open_pose if self.open_pose is not None
                 else (0.0, 0.0, 0.0))
             self.nav.reset(0.0, 0.0, 0.0)
+            self.finish_px = 0
+            self.finish_hits = 0
             self.start_t_abs = self.get_clock().now().nanoseconds / 1e9
             self.start_hold = max(0.0, float(
                 self.get_parameter('start_hold').value))
@@ -421,6 +478,8 @@ class AutonomousController(Node):
         self.start_x, self.start_y = 0.0, -1.35
         self.start_yaw = math.pi / 2.0
         self.nav.reset(0.0, 0.0, 0.0)
+        self.finish_px = 0
+        self.finish_hits = 0
         self._send_obstacles()
         self.start_t_abs = self.get_clock().now().nanoseconds / 1e9
         self.start_hold = max(0.0, float(
@@ -577,7 +636,7 @@ class AutonomousController(Node):
 
         fresh = (t_abs - self.vision_t) < VISION_TIMEOUT
         finish = (self.nav.mode != 'open'
-                  and fresh and self.finish_px >= FINISH_PIX)
+                  and fresh and self.finish_hits >= FINISH_HITS)
 
         v, w = self.nav.step(x=self.dr_x, y=self.dr_y, rel=self.heading(),
                              t=t_abs,

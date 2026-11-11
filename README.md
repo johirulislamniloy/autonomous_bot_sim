@@ -20,7 +20,7 @@ Repository: <https://github.com/johirulislamniloy/autonomous_bot_sim>
 | Servo-mounted TOF | `/tof_range` + `/set_joint_trajectory` | forward polar scan / corner detection |
 | Left ultrasonic sonar | `/sonar_left` | track following and side clearance |
 | Right ultrasonic sonar | `/sonar_right` | track following and side clearance |
-| Angled camera (0.35 rad down) | `/front_camera/image_raw` | cyan finish strip (obstacle round) |
+| Angled camera (0.35 rad down) | `/front_camera/image_raw` | red finish strip (obstacle round) |
 | IMU | `/imu/data` | heading hold, straightening, 90 deg corner turns |
 | Wheel odometry | `/odom` | RViz trail and heading fallback |
 
@@ -41,8 +41,21 @@ published.
 ## Obstacle round (default)
 
 The arena is **1 m x 3 m** with **10 cm tall** boundary walls. The robot
-starts on the yellow line at `(x=0, y=-1.35)` facing `+Y`; the cyan finish
+starts on the yellow line at `(x=0, y=-1.35)` facing `+Y`; the red finish
 strip is at `y=+1.175`, 30 cm before the end-wall inner face.
+
+The strip is the same red as the red blocks, so the camera does not rely on
+colour alone. It only accepts red that **spans at least 70% of the image
+width** in the bottom floor band (rows 75-100%, where the floor is
+0.17-0.27 m ahead): the 0.95 m strip crosses the whole view, while a 5 cm
+block at the avoidance distance spans ~12% (about 40% at the closest possible
+0.09 m approach, and its body above the band rejects it anyway). A column
+span is used instead of a single-row run because a strip approached at an
+angle still spans every column, but each row crosses it over a short piece.
+Red above row 60% can only be a block body (the flat strip never appears
+there) and rejects the frame. A progress gate is the third check: a camera
+hit is ignored before progress 2.075 m, so a red block near the start cannot
+switch the navigator to FINAL (which has no avoidance).
 
 Every launch (`seed:=-1`) scatters **exactly 8 black-edged competition blocks**
 of **5 cm x 5 cm x 10 cm**, 4 red and 4 green in a freshly shuffled order.
@@ -80,8 +93,12 @@ The obstacle-round modes are `astar`, `scan` and `bug2`.
 * **`bug2`** - classic Bug2 on the finish line: drive along the M-line, and on
   a hit follow the box boundary until the line is clear again.
 * **FINAL** (all three) - straighten, ease back to the lane centre and creep
-  onto the cyan strip. The robot stops on the line or at the end-wall guard,
-  without touching a wall or a block.
+  onto the red strip. The stop is an absolute front-TOF reading of the end
+  wall: the strip is 30 cm before the wall and the beam pivot is 10 cm ahead
+  of the axle, so the axle is on the strip centre at a 0.20 m reading. (The
+  previous dead-reckoned stop could fire ~16 cm early when the robot scraped
+  past a block.) Progress is only the fallback if the strip was never seen or
+  the wall is not visible, and the end-wall guard still protects the wall.
 * **ESCAPE** - with no wheel encoders, a stall is detected from the sensors
   only (flat close TOF, pressed side sonar, or flat IMU yaw while turning).
   The robot reverses while probing for room, straightens, and resumes.
@@ -242,8 +259,8 @@ When the run completes the controller prints the total challenge time:
 
 ```
 ==============================================================
-  CHALLENGE COMPLETE in 32.80 seconds
-  reason: finish line crossed (safe stop before wall)
+  CHALLENGE COMPLETE in 28.90 seconds
+  reason: finish line colour detected, TOF stop (wall 0.20 m)
 ==============================================================
 ```
 
@@ -264,7 +281,8 @@ Obstacle-round (`autonomous_bot_sim/color_navigator.py`):
 |---|---|---|
 | `WALL_P` | 2.825 m | end-wall inner face from the start pose |
 | `WALL_SIDE` | 0.475 m | side-wall inner face from the lane centre |
-| `FINISH_P` | 2.525 m | dead-reckoned finish target (`finish_y = 1.175`) |
+| `FINISH_P` | 2.525 m | axle on the strip (`finish_y = 1.175`), dead-reckoned fallback |
+| `FINISH_TOF` | 0.200 m | front-TOF wall reading with the axle on the strip |
 | `PLAN_CLEAR` | 0.125 m | guaranteed free radius used by the planner |
 | `DECIDE_DIST` | 0.160 m | stop this far before a block |
 | `T_FINAL` | 30.0 s | FINAL approach timeout |

@@ -33,7 +33,7 @@ Pick the algorithm with the `mode` launch/ROS parameter (or nav.set_mode()):
             3 complete laps (24 m).  The driving direction (clockwise or
             counter-clockwise) is assigned randomly at the event.
 
-Shared by all obstacle modes: FINAL (cyan strip seen / finish zone -> dash).
+Shared by all obstacle modes: FINAL (red strip seen / finish zone -> dash).
 
 Angles are relative to the start heading: 0 = toward the finish, + = left.
 Box colour is never used.
@@ -69,8 +69,12 @@ class ColorCourseNavigator:
     WALL_STOP     = 0.075       # raw TOF distance at which the wall guard stops
     BEAM_X        = 0.100       # TOF pivot ahead of the axle
     SONAR_Y       = 0.075       # side sonar offset from the centre line
-    FINISH_P      = 2.525       # axle progress on the cyan strip
+    FINISH_P      = 2.525       # axle progress on the red strip
     LINE_MIN_P    = 2.175       # closest sensible start of the finish zone
+    # Front-TOF range to the end wall with the axle on the strip centre:
+    # the strip is WALL_P - FINISH_P (0.30 m) before the wall and the beam
+    # pivot is BEAM_X (0.10 m) ahead of the axle.
+    FINISH_TOF    = (WALL_P - FINISH_P) - BEAM_X    # 0.20 m
 
     # ---------------------------------------------------------------- scan
     SWEEP_AMP     = 1.05
@@ -1015,10 +1019,6 @@ class ColorCourseNavigator:
         self.raw_d = rf[2] if rf is not None else INF
         if self.raw_d >= self.MAX_RANGE - 0.05:
             self.raw_d = INF            # saturated / no return: not a signal
-        if finish:
-            self.finish_seen = True
-            self.last_finish_t = t
-
         if self.state is None:
             print('[nav] mode = %s' % self.mode, flush=True)
             self._enter_cycle(t)
@@ -1029,6 +1029,16 @@ class ColorCourseNavigator:
         elapsed = t - self.t_state
         prog = self.progress(x, y)
         lat = self.lateral(x, y)
+
+        # The line is red like the red boxes, so a camera hit is only
+        # accepted inside the finish zone.  Boxes are spawned at y <= 0.90
+        # (progress <= 2.25); they are seen from ~0.2 m away, i.e. at
+        # progress < 2.08, so this gate keeps them out even if the shape test
+        # ever slips.  Without the gate a false hit would switch to FINAL,
+        # which has no obstacle avoidance.
+        if finish and prog >= self.line_min_p - 0.10:
+            self.finish_seen = True
+            self.last_finish_t = t
 
         # Open round: count travel along the ring.  x/y are dead reckoned from
         # the commanded forward speed, so in-place corner turns add nothing.
@@ -1045,9 +1055,10 @@ class ColorCourseNavigator:
         if self.DEBUG and int(t * 2) != self._dbg:
             self._dbg = int(t * 2)
             print('[nav] %-9s %-10s p=%.2f lat=%+.2f rel=%+5.1fdeg fin=%d '
-                  'sonar L=%.2f R=%.2f tgt=%+5.1fdeg'
+                  'tof=%.2f sonar L=%.2f R=%.2f tgt=%+5.1fdeg'
                   % (self.mode, s, prog, lat, math.degrees(rel), finish,
-                     sonar_left, sonar_right, math.degrees(self.target_abs)),
+                     self.raw_d, sonar_left, sonar_right,
+                     math.degrees(self.target_abs)),
                   flush=True)
 
         if self.mode != 'open' and s != 'FINAL':
@@ -1822,7 +1833,26 @@ class ColorCourseNavigator:
             w, _ = self._turn_to(target, t)
             return 0.0, w
 
-        if prog >= self.finish_p:
+        # Primary stop: the front TOF to the end wall.  The strip is 30 cm
+        # before the wall and the beam pivot is 10 cm ahead of the axle, so
+        # the axle is on the strip centre when the wall reads 0.20 m.  This
+        # is an absolute reference: dead reckoning drifts while the robot
+        # squeezes past a box (up to ~20 cm either way in the reactive modes,
+        # which made the progress stop fire before the strip).
+        raw = self._raw_front(t, 0.20)
+        if self.finish_seen and raw is not None:
+            if raw[2] <= self.FINISH_TOF:
+                self.finished = True
+                self.finish_reason = ('finish line colour detected, TOF stop '
+                                      '(wall %.2f m)' % raw[2])
+                print('[nav] ON THE FINISH LINE (TOF wall %.3f m, '
+                      'progress=%.2f m)' % (raw[2], prog), flush=True)
+                return 0.0, 0.0
+
+        # Fallbacks: no camera confirmation of the strip, or no wall reading.
+        # Dead reckoning alone is accurate enough over the whole course, just
+        # not while scraping a box, so it is only trusted without the line.
+        if (not self.finish_seen or raw is None) and prog >= self.finish_p:
             self.finished = True
             self.finish_reason = ('finish line colour detected'
                                   if self.finish_seen else 'reached finish line')

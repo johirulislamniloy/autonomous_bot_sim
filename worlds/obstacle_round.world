@@ -83,9 +83,12 @@
       </link>
     </model>
 
-    <!-- ===== 3. START LINE (yellow) & FINISH LINE (cyan) - visual only =====
+    <!-- ===== 3. START LINE (yellow) & FINISH LINE (red) - visual only =====
          End-wall inner face is y=+1.475, so the finish line sits 30 cm
-         before it at y=+1.175.  Cyan is never confused with green boxes. ===== -->
+         before it at y=+1.175.  The competition line is red and the boxes
+         are red/green, so the camera distinguishes them by shape: the strip
+         spans the image width in the floor band; a box is narrow and has
+         red above that band. ===== -->
     <model name="start_line">
       <static>true</static>
       <pose>0.0 -1.35 0.001 0 0 0</pose>
@@ -103,7 +106,8 @@
       <link name="link">
         <visual name="visual">
           <geometry><box><size>0.95 0.04 0.002</size></box></geometry>
-          <material><ambient>0 0.95 1 1</ambient><diffuse>0 0.95 1 1</diffuse></material>
+          <!-- same red as the red obstacles on purpose -->
+          <material><ambient>0.85 0.08 0.08 1</ambient><diffuse>0.85 0.08 0.08 1</diffuse></material>
         </visual>
       </link>
     </model>
